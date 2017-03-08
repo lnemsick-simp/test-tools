@@ -147,9 +147,9 @@ other.each { |name,owner|
 }
 
 timestamp = Time.now.to_i
+logfile = File.join(simp_core_root_dir, "test-#{timestamp}.log")
 projects.each { |project|
   next unless Dir.exists?(File.join(project, 'spec'))
-  logfile = "test-#{timestamp}.log"
   
   ref = `git show-ref --head | head -n 1`.split[0]
   log("Processing #{project} ref #{ref}", logfile)
@@ -157,16 +157,16 @@ projects.each { |project|
     log("  Updating ruby gems", logfile)
     `bundle update >> #{logfile} 2>&1`
     if $?.exitstatus != 0
-      puts "  FAILED: 'bundle update' for #{project}"
+      log("  FAILED: 'bundle update' for #{project}", logfile)
       next
     end
    
     log("  Running spec tests", logfile)
     `bundle exec rake spec >> #{logfile} 2>&1`
     if $?.exitstatus == 0
-      puts "  --> PASSED: 'bundle exec rake spec' for #{project}"
+      log("  --> PASSED: 'bundle exec rake spec' for #{project}", logfile)
     else
-      puts "  --> FAILED: 'bundle exec rake spec' for #{project}"
+      log("  --> FAILED: 'bundle exec rake spec' for #{project}", logfile)
     end
 
     if Dir.exists?(File.join(project, 'spec', 'acceptance', 'suites'))
@@ -186,9 +186,9 @@ projects.each { |project|
     log("  Running acceptance tests", logfile)
     `bundle exec rake #{command} >> #{logfile} 2>&1`
     if $?.exitstatus == 0
-      puts "  --> PASSED: 'bundle exec rake #{command}' for #{project}"
+      log("  --> PASSED: 'bundle exec rake #{command}' for #{project}", logfile)
     else
-      puts "  --> FAILED: 'bundle exec rake #{command}' for #{project}"
+      log("  --> FAILED: 'bundle exec rake #{command}' for #{project}", logfile)
     end
 
     log('', logfile)

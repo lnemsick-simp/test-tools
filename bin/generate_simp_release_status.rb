@@ -75,8 +75,8 @@ class SimpReleaseStatusGenerator
   end
 
   def check_out_projects
-    info("Preparing a clean projects checkout at #{@options[:root_dir]}")
-    #FIXME the root diretory for checkouts should be pulled from the Puppetfile
+    debug("Preparing a clean projects checkout at #{@options[:root_dir]}")
+    #FIXME the root directory for checkouts should be pulled from the Puppetfile
     FileUtils.rm_rf(File.join(@options[:root_dir], 'src'))
 
     helper = PuppetfileHelper.new(@options[:puppetfile], @options[:root_dir])
@@ -120,11 +120,7 @@ class SimpReleaseStatusGenerator
     [git_origin, git_revision]
   end
 
-  def get_changelog_url(info)
-    git_origin = nil
-    Dir.chdir(info.component_dir) do
-      git_origin, git_revision = get_git_info
-    end
+  def get_changelog_url(info, git_origin)
     if info.type == :module
       changelog_url = "#{git_origin}/blob/master/CHANGELOG"
     else
@@ -132,7 +128,7 @@ class SimpReleaseStatusGenerator
       if spec_files.empty?
          changelog_url = 'UNKNOWN'
       else
-        changelog_url = "#{git_origin}/blob/master/build/#{File.basename(spec_files[0])}"
+        changelog_url = "#{:git_origin}/blob/master/build/#{File.basename(spec_files[0])}"
       end
     end
     changelog_url
@@ -162,7 +158,7 @@ class SimpReleaseStatusGenerator
     projects.flatten
   end
 
-  def get_release_status(info)
+  def get_release_status(info, git_origin)
     tag_found = false
     Dir.chdir(info.component_dir) do
     # determine if latest version is tagged
@@ -171,7 +167,17 @@ class SimpReleaseStatusGenerator
       debug("Available tags from origin = #{tags}")
       tag_found = tags.include?(info.version)
     end
-    tag_found ? :released : :unreleased
+    if (tag_found)
+      project_name = git_origin.split('/').last
+      github_release_results = JSON.parse(`curl -XGET https://api.github.com/repos/simp/#{project_name}/releases/tags/#{info.version}`)
+      if github_release_results.key?('tag_name')
+        :released
+      else
+        :tagged
+      end
+    else
+      :unreleased
+    end
   end
 
   def get_rpm_status(info)
@@ -330,7 +336,7 @@ class SimpReleaseStatusGenerator
   end
 
   def report_results(results)
-    info('-'*10)
+    debug('-'*10)
     columns = [
       'Component',
       'Proposed Version',
@@ -338,7 +344,7 @@ class SimpReleaseStatusGenerator
       'Latest Version',
       'Unit Test Status',
       'Acceptance Test Status',
-      'Tagged',
+      'GitHub Released',
       'Forge Released',
       'RPM Released',
       'Changelog'
@@ -365,9 +371,9 @@ class SimpReleaseStatusGenerator
     parse_command_line(args)
     return 0 if @options[:help_requested] # already have logged help
 
-    info("Running with options = <#{args.join(' ')}>") unless args.empty?
+    debug("Running with options = <#{args.join(' ')}>") unless args.empty?
     debug("Internal options=#{@options}")
-    info("START TIME: #{Time.now}")
+    puts("START TIME: #{Time.now}")
 
     get_last_versions if @options[:last_release_puppetfile]
     check_out_projects if @options[:clean_start]
@@ -375,15 +381,19 @@ class SimpReleaseStatusGenerator
     results = {}
     get_project_list.each do |project_dir|
       project = File.basename(project_dir)
-      info("Processing #{project}")
+      debug("Processing #{project}")
       begin
         info = Simp::ComponentInfo.new(project_dir, true, @options[:verbose])
+        git_origin = nil
+        Dir.chdir(info.component_dir) do
+          git_origin, git_revision = get_git_info
+        end
         entry = {
           :latest_version  => info.version,
-          :github_released => get_release_status(info),
+          :github_released => get_release_status(info, git_origin),
           :forge_released  => get_forge_status(info),
           :rpm_released    => get_rpm_status(info),
-          :changelog_url   => get_changelog_url(info)
+          :changelog_url   => get_changelog_url(info, git_origin)
         }
       rescue => e
         warning("#{project}: #{e}")
@@ -412,7 +422,7 @@ class SimpReleaseStatusGenerator
     report_results(results)
 
 
-    info("STOP TIME: #{Time.now}")
+    puts("STOP TIME: #{Time.now}")
     return 0
   rescue SignalException =>e
     if e.inspect == 'Interrupt'
@@ -437,8 +447,10 @@ class SimpReleaseStatusGenerator
       'Y'
     when :unreleased
       'N'
+    when :tagged
+      'tagged but not released'
     when :not_applicable
-      'n/a'
+      'N/A'
     else
        status.to_s
     end

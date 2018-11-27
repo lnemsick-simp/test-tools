@@ -72,6 +72,7 @@ class SimpReleaseStatusGenerator
       :help_requested          => false
     }
     @last_release_mods = nil
+    @github_api_limit_reached = false
   end
 
   def check_out_projects
@@ -168,12 +169,28 @@ class SimpReleaseStatusGenerator
       tag_found = tags.include?(info.version)
     end
     if (tag_found)
-      project_name = git_origin.split('/').last
-      github_release_results = JSON.parse(`curl -XGET https://api.github.com/repos/simp/#{project_name}/releases/tags/#{info.version}`)
-      if github_release_results.key?('tag_name')
-        :released
+      if @github_api_limit_reached
+        # No point trying to curl results...
+        :tagged_unknown_release_status
       else
-        :tagged
+        project_name = git_origin.split('/').last
+        releases_url = "https://api.github.com/repos/simp/#{project_name}/releases/tags/#{info.version}"
+        releases_url += "?access_token=#{ENV['GITHUB_ACCESS_TOKEN']}" if ENV['GITHUB_ACCESS_TOKEN']
+        github_release_results = JSON.parse(`curl -XGET #{releases_url} -s`)
+        debug(github_release_results.to_s)
+        if github_release_results.key?('tag_name')
+          :released
+        else
+          if github_release_results['message'] and github_release_results['message'].match(/Not Found/i)
+            :tagged
+          else
+            # we get here if the GitHub API interface has rate limited
+            # queries (happens most often when an access token is NOT
+            # used)
+            @github_api_limit_reached = true
+            :tagged_unknown_release_status
+          end
+        end
       end
     else
       :unreleased
@@ -241,7 +258,10 @@ class SimpReleaseStatusGenerator
   end
 
   def debug(msg)
-    log(msg) if @options[:verbose]
+    if @options[:verbose]
+      puts(msg)
+      log(msg)
+    end
   end
 
   def info(msg)
@@ -250,7 +270,8 @@ class SimpReleaseStatusGenerator
 
   def warning(msg)
     message = msg.gsub(/WARNING./,'')
-    log("WARNING: #{message}")
+    $stderr.puts("WARNING: #{message}")
+    log("WARNING: #{message}") if @options[:verbose]
   end
 
   def log(msg)
@@ -371,6 +392,19 @@ class SimpReleaseStatusGenerator
     parse_command_line(args)
     return 0 if @options[:help_requested] # already have logged help
 
+    if ENV['GITHUB_ACCESS_TOKEN'].nil?
+      msg = <<EOM
+GITHUB_ACCESS_TOKEN environment variable not detected.
+
+  GitHub queries may be rate limited, which will prevent
+  this program from determining GitHub release status.
+  Obtain an GitHub OAUTH token, set GITHUB_ACCESS_TOKEN
+  to it, and re-run for best results.
+
+EOM
+      warning(msg)
+    end
+
     debug("Running with options = <#{args.join(' ')}>") unless args.empty?
     debug("Internal options=#{@options}")
     puts("START TIME: #{Time.now}")
@@ -381,7 +415,8 @@ class SimpReleaseStatusGenerator
     results = {}
     get_project_list.each do |project_dir|
       project = File.basename(project_dir)
-      debug("Processing #{project}")
+      debug('='*80)
+      debug("Processing '#{project}'")
       begin
         info = Simp::ComponentInfo.new(project_dir, true, @options[:verbose])
         git_origin = nil
@@ -448,7 +483,9 @@ class SimpReleaseStatusGenerator
     when :unreleased
       'N'
     when :tagged
-      'tagged but not released'
+      'tagged only'
+    when :tagged_unknown_release_status
+      'tagged but unknown release status'
     when :not_applicable
       'N/A'
     else

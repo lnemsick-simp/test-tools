@@ -8,6 +8,62 @@ require 'parallel'
 require 'r10k/git'
 require 'simp/componentinfo'
 
+# Temporary monkey patch to extract RPM name and arch
+# FIXME Move appropriately into Simp::ComponentInfo::load_xxx_info()
+#       methods in simp-rake-helpers
+module Simp
+  class ComponentInfo
+    def rpm_name
+      return @rpm_name if @rpm_name
+
+      if @type == :module
+        require 'json'
+        metadata_file = File.join(@component_dir, 'metadata.json')
+        metadata = JSON.parse(File.read(metadata_file))
+        @rpm_name = "pupmod-#{metadata['name']}"
+      else
+        rpm_spec_file = Dir.glob(File.join(@component_dir, 'build', '*.spec')).first
+
+        # Determine asset RPM name, which we will ASSUME to be the main
+        # package version.  The RPM query, below, will return the main
+        # package followed by subpackages.
+        name_query = "rpm -q --queryformat '%{NAME}\\n' --specfile #{rpm_spec_file}"
+        rpm_name_list = `#{name_query} 2> /dev/null`
+        if $?.exitstatus != 0
+          msg = "Could not extract name from #{rpm_spec_file}. To debug, execute:\n" +
+            "   #{name_query}"
+          $stderr.puts("WARN: #{msg}")
+        else
+          @rpm_name = rpm_name_list.split("\n")[0].strip
+        end
+      end
+    end
+
+    def arch
+      return @arch if @arch
+
+      if @type == :module
+        @arch = 'noarch'
+      else
+        rpm_spec_file = Dir.glob(File.join(@component_dir, 'build', '*.spec')).first
+
+        # Determine asset arch, which we will ASSUME to be the main
+        # package version.  The RPM query, below, will return the main
+        # package followed by subpackages.
+        arch_query = "rpm -q --queryformat '%{ARCH}\\n' --specfile #{rpm_spec_file}"
+        rpm_arch_list = `#{arch_query} 2> /dev/null`
+        if $?.exitstatus != 0
+          msg = "Could not extract arch from #{rpm_spec_file}. To debug, execute:\n" + 
+            "   #{arch_query}"
+        else
+          @arch = rpm_arch_list.split("\n")[0].strip
+        end
+      end
+      @arch
+    end
+  end
+end
+
 # parts lifted from simp-rake-helpers R10KHelper
 class R10K::Git::ShellGit::ThinRepository
   def cache_repo
@@ -199,15 +255,29 @@ class SimpReleaseStatusGenerator
 
   def get_rpm_status(info)
     if info.type == :module
-      # query PackageCloud to see if a release to both el6 and el7 repos has been made
-      #FIXME This ASSUMES release qualifier is '0'
-      url_el6 = PCLOUD_URL_BASE + "6/pupmod-simp-#{File.basename(info.component_dir)}-0.noarch.rpm"
-      url_el7 = PCLOUD_URL_BASE + "7/pupmod-simp-#{File.basename(info.component_dir)}-0.noarch.rpm"
-      rpms_found = url_exists?(url_el6) && url_exists?(url_el7)
-      rpms_released = rpms_found ? :released : :unreleased
+      # FIXME This ASSUMES the release qualifier is 0 instead of using
+      #       simp-core/build/rpm/dependencies.yaml.
+      rpm = "#{info.rpm_name}-#{info.version}-0.#{info.arch}.rpm"
+      url_el6 = PCLOUD_URL_BASE + "6/" + rpm
+      url_el7 = PCLOUD_URL_BASE + "7/" + rpm
     else
-      rpms_released = :tbd
+      # FIXME If the RPM release qualifier has a %dist macro in it, there
+      # is no way to accurately extract it from the spec file. The logic
+      # below is a hack!
+      rpm = "#{info.rpm_name}-#{info.version}-#{info.release}.#{info.arch}.rpm"
+      url_el6 = PCLOUD_URL_BASE + "6/" + rpm
+      url_el6.gsub!('el7','el6')
+      url_el7 = PCLOUD_URL_BASE + "7/" + rpm
+      url_el7.gsub!('el6','el7')
     end
+
+    # query PackageCloud to see if a release to both el6 and el7 repos has been made
+    # Note that each URL is for a page with a download button, not the RPM itself.
+    debug("Checking existence of #{url_el6}: #{url_exists?(url_el6) ? 'exists' : 'does not exist'}")
+    debug("Checking existence of #{url_el7}: #{url_exists?(url_el7) ? 'exists' : 'does not exist'}")
+    rpms_found = url_exists?(url_el6) && url_exists?(url_el7)
+    rpms_found = url_exists?(url_el6) && url_exists?(url_el7)
+    rpms_released = rpms_found ? :released : :unreleased
     rpms_released
   end
 

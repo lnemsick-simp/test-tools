@@ -129,7 +129,7 @@ class SimpReleaseStatusGenerator
       if spec_files.empty?
          changelog_url = 'UNKNOWN'
       else
-        changelog_url = "#{:git_origin}/blob/master/build/#{File.basename(spec_files[0])}"
+        changelog_url = "#{git_origin}/blob/master/build/#{File.basename(spec_files[0])}"
       end
     end
     changelog_url

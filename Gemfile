@@ -19,7 +19,9 @@ end
 # mandatory gems
 gem 'bundler'
 gem 'coderay'
+gem 'colorize'
 gem 'dotenv'
+gem 'gitlab'
 gem 'json', '~> 1.8'
 gem 'metadata-json-lint'
 gem 'parallel'
@@ -43,6 +45,7 @@ end
 # nice-to-have gems (for debugging)
 group :debug do
   gem 'pry'
+  gem 'pry-byebug'
   gem 'pry-doc'
 end
 

@@ -354,8 +354,13 @@ class SimpReleaseStatusGenerator
 
   def parse_command_line(args)
 
+   program = File.basename(__FILE__)
     opt_parser = OptionParser.new do |opts|
-      opts.banner = "Usage: #{File.basename(__FILE__)} [options] -p PUPPETFILE"
+      opts.banner = [
+        "Usage: GITHUB_ACCESS_TOKEN=USER_API_TOKEN #{program} [OPTIONS] -p PUPPETFILE",
+        '         OR (release info incomplete due to GitHub rate limiting)',
+        "       #{program} [OPTIONS] -p PUPPETFILE"
+      ].join("\n")
       opts.separator ''
 
       opts.on(

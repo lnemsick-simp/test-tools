@@ -22,19 +22,24 @@ module Simp
         metadata = JSON.parse(File.read(metadata_file))
         @rpm_name = "pupmod-#{metadata['name']}"
       else
-        rpm_spec_file = Dir.glob(File.join(@component_dir, 'build', '*.spec')).first
+        # Some assets us LUA in their spec files to read a top-level CHANGELOG.
+        # So, have to be in the component directory for the RPM query to work
+        # and use a relative path for the spec file.
+        Dir.chdir(@component_dir) do
+          rpm_spec_file = Dir.glob(File.join('build', '*.spec')).first
 
-        # Determine asset RPM name, which we will ASSUME to be the main
-        # package version.  The RPM query, below, will return the main
-        # package followed by subpackages.
-        name_query = "rpm -q --queryformat '%{NAME}\\n' --specfile #{rpm_spec_file}"
-        rpm_name_list = `#{name_query} 2> /dev/null`
-        if $?.exitstatus != 0
-          msg = "Could not extract name from #{rpm_spec_file}. To debug, execute:\n" +
-            "   #{name_query}"
-          $stderr.puts("WARN: #{msg}")
-        else
-          @rpm_name = rpm_name_list.split("\n")[0].strip
+          # Determine asset RPM name, which we will ASSUME to be the main
+          # package version.  The RPM query, below, will return the main
+          # package followed by subpackages.
+          name_query = "rpm -q --queryformat '%{NAME}\\n' --specfile #{rpm_spec_file}"
+          rpm_name_list = `#{name_query} 2> /dev/null`
+          if $?.exitstatus != 0
+            msg = "Could not extract name from #{rpm_spec_file}. To debug, execute:\n" +
+              "   #{name_query}"
+            $stderr.puts("WARN: #{msg}")
+          else
+            @rpm_name = rpm_name_list.split("\n")[0].strip
+          end
         end
       end
     end
@@ -285,6 +290,7 @@ class SimpReleaseStatusGenerator
     modules_dir = File.join(@options[:root_dir], 'src', 'puppet', 'modules')
     simp_modules = []
 
+    return simp_modules unless Dir.exist?(modules_dir)
     # determine all SIMP-owned modules
     modules = Dir.entries(modules_dir).delete_if { |dir| dir[0] == '.' }
     modules.sort.each do |module_name|
@@ -493,9 +499,10 @@ EOM
       debug('='*80)
       debug("Processing '#{project}'")
       begin
-        info = Simp::ComponentInfo.new(project_dir, true, @options[:verbose])
+        info = nil
         git_origin = nil
-        Dir.chdir(info.component_dir) do
+        Dir.chdir(project_dir) do
+          info = Simp::ComponentInfo.new(project_dir, true, @options[:verbose])
           git_origin, git_revision = get_git_info
         end
         entry = {

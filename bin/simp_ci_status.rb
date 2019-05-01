@@ -2,7 +2,6 @@
 require 'gitlab'
 require 'colorize'
 require 'optparse'
-require 'pry'
 
 # Array or regexes
 SKIPPED_PROJECTS = [
@@ -19,7 +18,7 @@ SKIPPED_PROJECTS = [
 # gitlab API.  Info is in gitlab-ci.yaml, but haven't found it in results
 # pulled back by API, yet
 SKIPPED_TESTS = {
-  'validation' => [ 'pup6-lint', 'pup6-unit' ]
+#  'validation' => [ 'pup6-lint', 'pup6-unit' ]
 }
 
 
@@ -61,14 +60,18 @@ def pipeline_status(data, colorize=true)
   status = color_pipeline_status(data[:pipeline])
   status = status.uncolorize  unless colorize
   failed_jobs = {}
-  if status =~ /failed/
+  create_times = []
+  unless status =~ /none/
     data[:jobs].each do |job|
-      if job.status == 'failed'
-        next if SKIPPED_TESTS[job.stage] && SKIPPED_TESTS[job.stage].include?(job.name)
-        unless failed_jobs.key?(job.stage)
-          failed_jobs[job.stage] = []
+      create_times << job.created_at
+      if status =~ /failed/
+        if job.status == 'failed'
+          next if SKIPPED_TESTS[job.stage] && SKIPPED_TESTS[job.stage].include?(job.name)
+          unless failed_jobs.key?(job.stage)
+            failed_jobs[job.stage] = []
+          end
+          failed_jobs[job.stage] << job.name
         end
-        failed_jobs[job.stage] << job.name
       end
     end
   end
@@ -76,7 +79,7 @@ def pipeline_status(data, colorize=true)
   failed_jobs.each_key do |stage|
    stage_failures << "#{stage}:#{failed_jobs[stage].join(',')}"
   end
-  [status, stage_failures.join(';')]
+  [status, create_times.sort.first, stage_failures.join(';')]
 end
 
 # find the latest pipeline, on any branch
@@ -196,7 +199,7 @@ org_pipelines = {}
 # it doesn't really matter if you ask for too many pages, the extras will return empty
 (1..8).each do |page|
 #  threads << Thread.new do
-    puts "Retreiving #{$options[:org]} project list page #{page}" if $options[:debug]
+    puts "Retrieving #{$options[:org]} project list page #{page}" if $options[:debug]
 #    org_projects_page = g.group_projects($options[:org], page: page) || []
     org_projects_page = g.group_projects($options[:org], page: page)
     if org_projects_page
@@ -206,12 +209,11 @@ puts "EMPTY PAGE RETURNED #{org_projects_page.inspect}"
       org_projects = []
     end
     org_projects.each do |proj|
-      puts ">> Retreiving #{proj.name} pipelines" if $options[:debug]
+      puts ">> Retrieving #{proj.name} pipelines" if $options[:debug]
       pipelines = g.pipelines(proj.id)
       pipeline = get_pipeline($options[:report_on], pipelines)
-      if pipeline && (pipeline.status == 'failed')
-        puts ">>>> Retreiving #{proj.name} pipeline jobs" if $options[:debug]
-        # only bother to pull job status if job failed
+      if pipeline
+        puts ">>>> Retrieving #{proj.name} pipeline jobs" if $options[:debug]
         jobs = g.pipeline_jobs(proj.id, pipeline.id)
       else
         jobs = nil
@@ -240,10 +242,11 @@ relevant_pipelines.each do |proj_name, data|
   # project name - test status - pipeline url
   #   >> OR (pipeline failure) <<
   # project name - test status - pipeline url - failed test list
-  status,failed_job_list = pipeline_status(data, $options[:colorize])
+  status,create_time, failed_job_list = pipeline_status(data, $options[:colorize])
   result = [
     "%-#{longest_name}s" % proj_name,
     status,
+    create_time,
     data[:pipeline].nil? ? ' '*longest_url : "%-#{longest_url}s" % data[:pipeline].web_url,
     failed_job_list
   ]

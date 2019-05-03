@@ -174,7 +174,7 @@ class SimpReleaseStatusGenerator
   end
 =end
 
-  def get_acceptance_test_status(git_url)
+  def get_gitlab_test_status(git_url)
     return 'TBD' if ENV['GITLAB_ACCESS_TOKEN'].nil?
     proj_name = File.basename(git_url, '.git')
 
@@ -193,7 +193,8 @@ class SimpReleaseStatusGenerator
       end
     rescue =>e
       # can happen if a GitLab project for the component does not exist
-      warning(e.message)
+      msg = "Unable to get GitLab test status for #{proj_name}:\n  #{e.message}"
+      warning(msg)
     end
     status
   end
@@ -263,6 +264,7 @@ class SimpReleaseStatusGenerator
         :tagged_unknown_release_status
       else
         project_name = git_origin.split('/').last
+        project_name.gsub!(/\.git$/,'')
         releases_url = "https://api.github.com/repos/simp/#{project_name}/releases/tags/#{info.version}"
         releases_url += "?access_token=#{ENV['GITHUB_ACCESS_TOKEN']}" if ENV['GITHUB_ACCESS_TOKEN']
         github_release_results = JSON.parse(`curl -XGET #{releases_url} -s`)
@@ -481,9 +483,9 @@ class SimpReleaseStatusGenerator
       'Component',
       'Proposed Version',
       (@last_release_mods.nil?) ? nil : 'Version in Last SIMP',
-      'Latest Version',
-      'Unit Test Status',
-      'Acceptance Test Status',
+#      'Latest Version',
+#      'Unit Test Status',
+      'GitLab Test Status',
       'GitHub Released',
       'Forge Released',
       'RPM Released',
@@ -495,9 +497,9 @@ class SimpReleaseStatusGenerator
         project,
         info[:latest_version],
         (@last_release_mods.nil?) ? nil : info[:version_last_simp_release],
-        info[:latest_version],
-        info[:unit_test_status],
-        info[:acceptance_test_status],
+#        info[:latest_version],
+#        info[:unit_test_status],
+        info[:gitlab_test_status],
         translate_status(info[:github_released]),
         translate_status(info[:forge_released]),
         translate_status(info[:rpm_released]),
@@ -552,25 +554,25 @@ EOM
           git_origin, git_revision = get_git_info
         end
         entry = {
-          :latest_version         => info.version,
-          :unit_test_status       => 'TBD',  # need to pull from TravisCI
-          :acceptance_test_status => get_acceptance_test_status(git_origin),
-          :github_released        => get_release_status(info, git_origin),
-          :forge_released         => get_forge_status(info),
-          :rpm_released           => get_rpm_status(info),
-          :changelog_url          => get_changelog_url(info, git_origin)
+          :latest_version     => info.version,
+          :unit_test_status   => 'TBD',  # need to pull from TravisCI
+          :gitlab_test_status => get_gitlab_test_status(git_origin),
+          :github_released    => get_release_status(info, git_origin),
+          :forge_released     => get_forge_status(info),
+          :rpm_released       => get_rpm_status(info),
+          :changelog_url      => get_changelog_url(info, git_origin)
         }
       rescue => e
         warning("#{project}: #{e}")
         debug(e.backtrace.join("\n"))
         entry = {
-          :latest_version         => :unknown,
-          :unit_test_status       => :unknown,
-          :acceptance_test_status => :unknown,
-          :github_released        => :unknown,
-          :forge_released         => :unknown,
-          :rpm_released           => :unknown,
-          :changelog_url          => :unknown,
+          :latest_version     => :unknown,
+          :unit_test_status   => :unknown,
+          :gitlab_test_status => :unknown,
+          :github_released    => :unknown,
+          :forge_released     => :unknown,
+          :rpm_released       => :unknown,
+          :changelog_url      => :unknown,
         }
       end
 

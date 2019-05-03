@@ -179,8 +179,8 @@ class SimpReleaseStatusGenerator
     proj_name = File.basename(git_url, '.git')
 
     status = 'none'
-    proj = gitlab_client.search_in_group(GITLAB_ORG, 'projects', proj_name).first
-    if proj
+    begin
+      proj = gitlab_client.project("#{GITLAB_ORG}/#{proj_name}")
       pipeline = gitlab_client.pipelines(proj.id).select { |p|
         (p.ref == 'master') &&
         ((p.status == 'success') || (p.status == 'failed'))
@@ -191,6 +191,9 @@ class SimpReleaseStatusGenerator
         create_time = jobs.map { |job| job.created_at }.sort.first
         status = "#{pipeline.status.upcase} #{create_time} #{pipeline.web_url}"
       end
+    rescue =>e
+      # can happen if a GitLab project for the component does not exist
+      warning(e.message)
     end
     status
   end

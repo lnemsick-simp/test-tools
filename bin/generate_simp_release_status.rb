@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 #
 require 'fileutils'
+require 'gitlab'
 require 'json'
 require 'net/http'
 require 'optparse'
@@ -85,6 +86,7 @@ class PuppetfileHelper
 
   def initialize(puppetfile, root_dir, purge_cache = true)
     @modules = []
+    @gitlab_client = nil
 
     Dir.chdir(root_dir) do
       cache_dir = File.join(root_dir,'.r10k_cache')
@@ -118,8 +120,10 @@ class SimpReleaseStatusGenerator
 
   class InvalidModule < StandardError; end
   GITHUB_URL_BASE = 'https://github.com/simp/'
-  FORGE_URL_BASE = 'https://forge.puppet.com/simp/'
+  FORGE_URL_BASE  = 'https://forge.puppet.com/simp/'
   PCLOUD_URL_BASE = 'https://packagecloud.io/simp-project/6_X/packages/el/'
+  GITLAB_API_URL  = 'https://gitlab.com/api/v4'
+  GITLAB_ORG      = 'simp'
 
   def initialize
 
@@ -169,6 +173,27 @@ class SimpReleaseStatusGenerator
     result
   end
 =end
+
+  def get_acceptance_test_status(git_url)
+    return 'TBD' if ENV['GITLAB_ACCESS_TOKEN'].nil?
+    proj_name = File.basename(git_url, '.git')
+
+    status = 'none'
+    proj = gitlab_client.search_in_group(GITLAB_ORG, 'projects', proj_name).first
+    if proj
+      pipeline = gitlab_client.pipelines(proj.id).select { |p|
+        (p.ref == 'master') &&
+        ((p.status == 'success') || (p.status == 'failed'))
+      }.max_by{ |p| p.id }
+      if pipeline
+        debug(">>>> Retrieving #{proj.name} pipeline jobs for #{proj_name}")
+        jobs = gitlab_client.pipeline_jobs(proj.id, pipeline.id)
+        create_time = jobs.map { |job| job.created_at }.sort.first
+        status = "#{pipeline.status.upcase} #{create_time} #{pipeline.web_url}"
+      end
+    end
+    status
+  end
 
   def get_git_info
     git_status = `git status`.split("\n").delete_if do |line|
@@ -315,6 +340,16 @@ class SimpReleaseStatusGenerator
     assets.sort
   end
 
+  def gitlab_client
+    return @gitlab_client unless @gitlab_client.nil?
+
+    @gitlab_client = Gitlab.client(
+      :endpoint      => GITLAB_API_URL,
+      :private_token => ENV['GITLAB_ACCESS_TOKEN']
+    )
+    @gitlab_client
+  end
+
   def load_module_metadata( file_path = nil )
     require 'json'
     begin
@@ -455,11 +490,11 @@ class SimpReleaseStatusGenerator
     results.each do |project, info|
       project_data = [
         project,
-        info[ :latest_version],
+        info[:latest_version],
         (@last_release_mods.nil?) ? nil : info[:version_last_simp_release],
-        info[ :latest_version],
-        'TBD',
-        'TBD',
+        info[:latest_version],
+        info[:unit_test_status],
+        info[:acceptance_test_status],
         translate_status(info[:github_released]),
         translate_status(info[:forge_released]),
         translate_status(info[:rpm_released]),
@@ -486,6 +521,14 @@ EOM
       warning(msg)
     end
 
+    if ENV['GITLAB_ACCESS_TOKEN'].nil?
+      msg = <<EOM
+GITLAB_ACCESS_TOKEN environment variable not detected.
+No acceptance test results will be pulled from GitLab.
+EOM
+      warning(msg)
+    end
+
     debug("Running with options = <#{args.join(' ')}>") unless args.empty?
     debug("Internal options=#{@options}")
     puts("START TIME: #{Time.now}")
@@ -506,21 +549,25 @@ EOM
           git_origin, git_revision = get_git_info
         end
         entry = {
-          :latest_version  => info.version,
-          :github_released => get_release_status(info, git_origin),
-          :forge_released  => get_forge_status(info),
-          :rpm_released    => get_rpm_status(info),
-          :changelog_url   => get_changelog_url(info, git_origin)
+          :latest_version         => info.version,
+          :unit_test_status       => 'TBD',  # need to pull from TravisCI
+          :acceptance_test_status => get_acceptance_test_status(git_origin),
+          :github_released        => get_release_status(info, git_origin),
+          :forge_released         => get_forge_status(info),
+          :rpm_released           => get_rpm_status(info),
+          :changelog_url          => get_changelog_url(info, git_origin)
         }
       rescue => e
         warning("#{project}: #{e}")
         debug(e.backtrace.join("\n"))
         entry = {
-          :latest_version  => :unknown,
-          :github_released => :unknown,
-          :forge_released  => :unknown,
-          :rpm_released    => :unknown,
-          :changelog_url   => :unknown,
+          :latest_version         => :unknown,
+          :unit_test_status       => :unknown,
+          :acceptance_test_status => :unknown,
+          :github_released        => :unknown,
+          :forge_released         => :unknown,
+          :rpm_released           => :unknown,
+          :changelog_url          => :unknown,
         }
       end
 

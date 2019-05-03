@@ -242,7 +242,7 @@ relevant_pipelines.each do |proj_name, data|
   # project name - test status - pipeline url
   #   >> OR (pipeline failure) <<
   # project name - test status - pipeline url - failed test list
-  status,create_time, failed_job_list = pipeline_status(data, $options[:colorize])
+  status, create_time, failed_job_list = pipeline_status(data, $options[:colorize])
   result = [
     "%-#{longest_name}s" % proj_name,
     status,

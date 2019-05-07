@@ -340,6 +340,7 @@ class SimpReleaseStatusGenerator
 
   def get_assets
     assets_dir = File.join(@options[:root_dir], 'src', 'assets')
+    return [] unless Dir.exist?(assets_dir)
     assets = Dir.entries(assets_dir).delete_if { |dir| dir[0] == '.' }
     assets.map! { |asset| File.expand_path(File.join(assets_dir, asset)) }
     assets.sort
@@ -580,7 +581,7 @@ EOM
         if @last_release_mods[project]
           last_version_in_simp = @last_release_mods[project]
         else
-          last_version_in_simp = 'n/a'
+          last_version_in_simp = 'N/A'
         end
         entry[:version_last_simp_release] = last_version_in_simp
       end

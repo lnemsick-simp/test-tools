@@ -103,9 +103,9 @@ class PuppetfileHelper
           :path        => mod.path.to_s,
 #          :remote      => mod.repo.instance_variable_get('@remote'),
           :desired_ref => mod.desired_ref,
+#TODO Can we use these instead of querying git for the info?
 #          :git_source  => mod.repo.repo.origin,
 #          :git_ref     => mod.repo.head,
-#          :module_dir  => mod.basedir,
           :r10k_module => mod,
           :r10k_cache  => mod.repo.repo.cache_repo
         }
@@ -174,6 +174,26 @@ class SimpReleaseStatusGenerator
   end
 =end
 
+  # returns the latest commit ref
+  def get_gitlab_ref(git_url)
+    return 'TBD' if ENV['GITLAB_ACCESS_TOKEN'].nil?
+    proj_name = File.basename(git_url, '.git')
+
+    gitlab_ref = nil
+    begin
+      proj = gitlab_client.project("#{GITLAB_ORG}/#{proj_name}")
+      commits = gitlab_client.repo_commits(proj.id, page: 1)
+      if commits
+        gitlab_ref = commits[0].to_hash['id']
+      end
+    rescue =>e
+      # can happen if a GitLab project for the component does not exist
+      msg = "Unable to get GitLab ref for #{proj_name}:\n  #{e.message}"
+      warning(msg)
+    end
+    gitlab_ref
+  end
+
   def get_gitlab_test_status(git_url)
     return 'TBD' if ENV['GITLAB_ACCESS_TOKEN'].nil?
     proj_name = File.basename(git_url, '.git')
@@ -200,15 +220,12 @@ class SimpReleaseStatusGenerator
   end
 
   def get_git_info
-    git_status = `git status`.split("\n").delete_if do |line|
-      line.match(/HEAD detached at|On branch/).nil?
-    end
-    git_revision = git_status[0].gsub(/# HEAD detached at |# On branch /,'')
+    git_ref = `git log -n 1 --format=%H`.strip
     git_origin_line = `git remote -v`.split("\n").delete_if do |line|
       line.match(/^origin/).nil? or line.match(/\(fetch\)/).nil?
     end
     git_origin = git_origin_line[0].gsub(/^origin/,'').gsub(/.fetch.$/,'').strip
-    [git_origin, git_revision]
+    [git_origin, git_ref]
   end
 
   def get_changelog_url(info, git_origin)
@@ -486,6 +503,7 @@ class SimpReleaseStatusGenerator
       (@last_release_mods.nil?) ? nil : 'Version in Last SIMP',
 #      'Latest Version',
 #      'Unit Test Status',
+      'GitLab Current',
       'GitLab Test Status',
       'GitHub Released',
       'Forge Released',
@@ -499,7 +517,8 @@ class SimpReleaseStatusGenerator
         info[:latest_version],
         (@last_release_mods.nil?) ? nil : info[:version_last_simp_release],
 #        info[:latest_version],
-#        info[:unit_test_status],
+#        info[:travis_test_status],
+        info[:gitlab_current],
         info[:gitlab_test_status],
         translate_status(info[:github_released]),
         translate_status(info[:forge_released]),
@@ -550,13 +569,29 @@ EOM
       begin
         info = nil
         git_origin = nil
+        git_ref = nil
         Dir.chdir(project_dir) do
           info = Simp::ComponentInfo.new(project_dir, true, @options[:verbose])
-          git_origin, git_revision = get_git_info
+          git_origin, git_ref = get_git_info
         end
+
+        gitlab_ref = get_gitlab_ref(git_origin)
+
+        unless gitlab_ref.nil?
+          if git_ref != gitlab_ref
+            msg = [
+              'Git reference mismatch for '#{project}':',
+              "  GitHub ref = #{git_ref}",
+              "  GitLab ref = #{gitlab_ref}"
+            ].join("\n")
+            warning(msg)
+          end
+        end
+
         entry = {
           :latest_version     => info.version,
-          :unit_test_status   => 'TBD',  # need to pull from TravisCI
+          :travis_test_status   => 'TBD',  # need to pull from TravisCI
+          :gitlab_current     => gitlab_ref.nil? ? 'N/A' : (git_ref == gitlab_ref),
           :gitlab_test_status => get_gitlab_test_status(git_origin),
           :github_released    => get_release_status(info, git_origin),
           :forge_released     => get_forge_status(info),
@@ -568,7 +603,8 @@ EOM
         debug(e.backtrace.join("\n"))
         entry = {
           :latest_version     => :unknown,
-          :unit_test_status   => :unknown,
+          :travis_test_status   => :unknown,
+          :gitlab_current     => :unknown,
           :gitlab_test_status => :unknown,
           :github_released    => :unknown,
           :forge_released     => :unknown,
@@ -588,6 +624,9 @@ EOM
 
       results[project] = entry
     end
+
+#require 'pry-byebug'
+#binding.pry
 
     report_results(results)
 

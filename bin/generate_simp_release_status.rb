@@ -580,7 +580,7 @@ EOM
         unless gitlab_ref.nil?
           if git_ref != gitlab_ref
             msg = [
-              'Git reference mismatch for '#{project}':',
+              "Git reference mismatch for '#{project}':",
               "  GitHub ref = #{git_ref}",
               "  GitLab ref = #{gitlab_ref}"
             ].join("\n")

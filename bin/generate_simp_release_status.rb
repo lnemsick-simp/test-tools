@@ -194,11 +194,30 @@ class SimpReleaseStatusGenerator
     gitlab_ref
   end
 
+  def get_gitlab_pipeline_failed_jobs(pipeline_jobs)
+    failed_jobs_per_stage = {}
+    pipeline_jobs.each do |job|
+      if job.status == 'failed'
+        unless failed_jobs_per_stage.key?(job.stage)
+          failed_jobs_per_stage[job.stage] = []
+        end
+        failed_jobs_per_stage[job.stage] << job.name
+      end
+    end
+
+    stage_failures = []
+    failed_jobs_per_stage.each_key do |stage|
+      stage_failures << "#{stage}:#{failed_jobs_per_stage[stage].join(' ')}"
+    end
+    stage_failures.join(' ; ')
+  end
+
   def get_gitlab_test_status(git_url)
     return 'TBD' if ENV['GITLAB_ACCESS_TOKEN'].nil?
     proj_name = File.basename(git_url, '.git')
 
     status = 'none'
+    failed_jobs = ''
     begin
       proj = gitlab_client.project("#{GITLAB_ORG}/#{proj_name}")
       pipeline = gitlab_client.pipelines(proj.id).select { |p|
@@ -209,6 +228,10 @@ class SimpReleaseStatusGenerator
         debug(">>>> Retrieving #{proj.name} pipeline jobs for #{proj_name}")
         jobs = gitlab_client.pipeline_jobs(proj.id, pipeline.id)
         create_time = jobs.map { |job| job.created_at }.sort.first
+        failed_jobs = ''
+        if pipeline.status == 'failed'
+          failed_jobs = get_gitlab_pipeline_failed_jobs(jobs)
+        end
         status = "#{pipeline.status.upcase} #{create_time} #{pipeline.web_url}"
       end
     rescue =>e
@@ -216,7 +239,7 @@ class SimpReleaseStatusGenerator
       msg = "Unable to get GitLab test status for #{proj_name}:\n  #{e.message}"
       warning(msg)
     end
-    status
+    [ status, failed_jobs ]
   end
 
   def get_git_info
@@ -505,6 +528,7 @@ class SimpReleaseStatusGenerator
 #      'Unit Test Status',
       'GitLab Current',
       'GitLab Test Status',
+      'GitLab Failed Jobs',
       'GitHub Released',
       'Forge Released',
       'RPM Released',
@@ -520,6 +544,7 @@ class SimpReleaseStatusGenerator
 #        info[:travis_test_status],
         info[:gitlab_current],
         info[:gitlab_test_status],
+        info[:gitlab_failed_jobs],
         translate_status(info[:github_released]),
         translate_status(info[:forge_released]),
         translate_status(info[:rpm_released]),
@@ -588,11 +613,14 @@ EOM
           end
         end
 
+        gitlab_test_status, gitlab_failed_jobs = get_gitlab_test_status(git_origin)
+
         entry = {
           :latest_version     => info.version,
           :travis_test_status   => 'TBD',  # need to pull from TravisCI
           :gitlab_current     => gitlab_ref.nil? ? 'N/A' : (git_ref == gitlab_ref),
-          :gitlab_test_status => get_gitlab_test_status(git_origin),
+          :gitlab_test_status => gitlab_test_status,
+          :gitlab_failed_jobs => gitlab_failed_jobs,
           :github_released    => get_release_status(info, git_origin),
           :forge_released     => get_forge_status(info),
           :rpm_released       => get_rpm_status(info),
@@ -606,6 +634,7 @@ EOM
           :travis_test_status   => :unknown,
           :gitlab_current     => :unknown,
           :gitlab_test_status => :unknown,
+          :gitlab_failed_jobs => :unknown,
           :github_released    => :unknown,
           :forge_released     => :unknown,
           :rpm_released       => :unknown,

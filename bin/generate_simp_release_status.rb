@@ -306,14 +306,31 @@ class SimpReleaseStatusGenerator
         project_name = git_origin.split('/').last
         project_name.gsub!(/\.git$/,'')
         releases_url = "https://api.github.com/repos/simp/#{project_name}/releases/tags/#{info.version}"
-        releases_url += "?access_token=#{ENV['GITHUB_ACCESS_TOKEN']}" if ENV['GITHUB_ACCESS_TOKEN']
-        github_release_results = JSON.parse(`curl -XGET #{releases_url} -s`)
+
+        cmd = [
+          'curl',
+          '-H "Accept: application/vnd.github.v3+json"',
+          " -XGET #{releases_url}",
+          '-s'
+        ].join(' ')
+
+        cmd += " -H \"Authorization: token #{ENV['GITHUB_ACCESS_TOKEN']}\"" if ENV['GITHUB_ACCESS_TOKEN']
+
+        github_release_results = JSON.parse(`#{cmd}`)
         debug(github_release_results.to_s)
         if github_release_results.key?('tag_name')
           :released
         else
           if github_release_results['message'] and github_release_results['message'].match(/Not Found/i)
             :tagged
+          elsif github_release_results['message'] and github_release_results['message'].match(/Moved Permanently/i)
+            # In one odd case (simp-rsync_data_pre64) we work around the
+            # Puppetfile limitation that only allows one entry per git URL
+            # by using an old name for the repo. Unfortunately, the GitHub API
+            # doesn't follow redirects.
+            # TODO Use the response to reformulate the request with the repo ID
+            # instead.  See https://stackoverflow.com/questions/28863131/github-api-how-to-keep-track-of-moved-repos-projects
+            :unknown_repo_moved
           else
             # we get here if the GitHub API interface has rate limited
             # queries (happens most often when an access token is NOT
@@ -689,6 +706,8 @@ EOM
       'tagged only'
     when :tagged_unknown_release_status
       'tagged but unknown release status'
+    when :unknown_repo_moved
+      'unknown release status: permanently moved repo'
     when :not_applicable
       'N/A'
     else

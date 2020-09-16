@@ -131,7 +131,7 @@ class SimpReleaseStatusGenerator
       :puppetfile              => nil,
       :last_release_puppetfile => nil,
       :root_dir                => File.expand_path('.'),
-      :output_file             => 'simp_component_release_status.txt',
+      :output_file             => 'simp_component_release_status.csv',
       :clean_start             => true,
       :verbose                 => false,
       :help_requested          => false
@@ -251,11 +251,11 @@ class SimpReleaseStatusGenerator
     [git_origin, git_ref]
   end
 
-  def get_changelog_url(info, git_origin)
-    if info.type == :module
+  def get_changelog_url(proj_info, git_origin)
+    if proj_info.type == :module
       changelog_url = "#{git_origin}/blob/master/CHANGELOG"
     else
-      spec_files = Dir.glob(File.join(info.component_dir, 'build', '*.spec'))
+      spec_files = Dir.glob(File.join(proj_info.component_dir, 'build', '*.spec'))
       if spec_files.empty?
          changelog_url = 'UNKNOWN'
       else
@@ -273,9 +273,9 @@ class SimpReleaseStatusGenerator
     (result.code == '200')
   end
 
-  def get_forge_status(info)
-    if info.type == :module
-      url = FORGE_URL_BASE + "#{File.basename(info.component_dir)}/#{info.version}/readme"
+  def get_forge_status(proj_info)
+    if proj_info.type == :module
+      url = FORGE_URL_BASE + "#{File.basename(proj_info.component_dir)}/#{proj_info.version}/readme"
       forge_published = (url_exists?(url)) ? :released : :unreleased
     else
       forge_published = :not_applicable
@@ -289,14 +289,14 @@ class SimpReleaseStatusGenerator
     projects.flatten
   end
 
-  def get_release_status(info, git_origin)
+  def get_release_status(proj_info, git_origin)
     tag_found = false
-    Dir.chdir(info.component_dir) do
+    Dir.chdir(proj_info.component_dir) do
     # determine if latest version is tagged
       `git fetch -t origin 2>/dev/null`
       tags = `git tag -l`.split("\n")
       debug("Available tags from origin = #{tags}")
-      tag_found = tags.include?(info.version)
+      tag_found = tags.include?(proj_info.version)
     end
     if (tag_found)
       if @github_api_limit_reached
@@ -305,7 +305,7 @@ class SimpReleaseStatusGenerator
       else
         project_name = git_origin.split('/').last
         project_name.gsub!(/\.git$/,'')
-        releases_url = "https://api.github.com/repos/simp/#{project_name}/releases/tags/#{info.version}"
+        releases_url = "https://api.github.com/repos/simp/#{project_name}/releases/tags/#{proj_info.version}"
 
         cmd = [
           'curl',
@@ -345,18 +345,20 @@ class SimpReleaseStatusGenerator
     end
   end
 
-  def get_rpm_status(info)
-    if info.type == :module
+  # FIXME Package cloud is no longer applicable.  Need to pull status from
+  # new SIMP repos
+  def get_rpm_status(proj_info)
+    if proj_info.type == :module
       # FIXME This ASSUMES the release qualifier is 0 instead of using
       #       simp-core/build/rpm/dependencies.yaml.
-      rpm = "#{info.rpm_name}-#{info.version}-0.#{info.arch}.rpm"
+      rpm = "#{proj_info.rpm_name}-#{proj_info.version}-0.#{proj_info.arch}.rpm"
       url_el6 = PCLOUD_URL_BASE + "6/" + rpm
       url_el7 = PCLOUD_URL_BASE + "7/" + rpm
     else
       # FIXME If the RPM release qualifier has a %dist macro in it, there
       # is no way to accurately extract it from the spec file. The logic
       # below is a hack!
-      rpm = "#{info.rpm_name}-#{info.version}-#{info.release}.#{info.arch}.rpm"
+      rpm = "#{proj_info.rpm_name}-#{proj_info.version}-#{proj_info.release}.#{proj_info.arch}.rpm"
       url_el6 = PCLOUD_URL_BASE + "6/" + rpm
       url_el6.gsub!('el7','el6')
       url_el7 = PCLOUD_URL_BASE + "7/" + rpm
@@ -552,20 +554,20 @@ class SimpReleaseStatusGenerator
       'Changelog'
     ]
     info(columns.compact.join(','))
-    results.each do |project, info|
+    results.each do |project, proj_info|
       project_data = [
         project,
-        info[:latest_version],
-        (@last_release_mods.nil?) ? nil : info[:version_last_simp_release],
-#        info[:latest_version],
-#        info[:travis_test_status],
-        info[:gitlab_current],
-        info[:gitlab_test_status],
-        info[:gitlab_failed_jobs],
-        translate_status(info[:github_released]),
-        translate_status(info[:forge_released]),
-        translate_status(info[:rpm_released]),
-        info[:changelog_url],
+        proj_info[:latest_version],
+        (@last_release_mods.nil?) ? nil : proj_info[:version_last_simp_release],
+#        proj_info[:latest_version],
+#        proj_info[:travis_test_status],
+        proj_info[:gitlab_current],
+        proj_info[:gitlab_test_status],
+        proj_info[:gitlab_failed_jobs],
+        translate_status(proj_info[:github_released]),
+        translate_status(proj_info[:forge_released]),
+        translate_status(proj_info[:rpm_released]),
+        proj_info[:changelog_url],
       ]
       info(project_data.compact.join(','))
     end
@@ -609,11 +611,11 @@ EOM
       debug('='*80)
       debug("Processing '#{project}'")
       begin
-        info = nil
+        proj_info = nil
         git_origin = nil
         git_ref = nil
         Dir.chdir(project_dir) do
-          info = Simp::ComponentInfo.new(project_dir, true, @options[:verbose])
+          proj_info = Simp::ComponentInfo.new(project_dir, true, @options[:verbose])
           git_origin, git_ref = get_git_info
         end
 
@@ -633,15 +635,15 @@ EOM
         gitlab_test_status, gitlab_failed_jobs = get_gitlab_test_status(git_origin)
 
         entry = {
-          :latest_version     => info.version,
+          :latest_version     => proj_info.version,
           :travis_test_status   => 'TBD',  # need to pull from TravisCI
           :gitlab_current     => gitlab_ref.nil? ? 'N/A' : (git_ref == gitlab_ref),
           :gitlab_test_status => gitlab_test_status,
           :gitlab_failed_jobs => gitlab_failed_jobs,
-          :github_released    => get_release_status(info, git_origin),
-          :forge_released     => get_forge_status(info),
-          :rpm_released       => get_rpm_status(info),
-          :changelog_url      => get_changelog_url(info, git_origin)
+          :github_released    => get_release_status(proj_info, git_origin),
+          :forge_released     => get_forge_status(proj_info),
+          :rpm_released       => get_rpm_status(proj_info),
+          :changelog_url      => get_changelog_url(proj_info, git_origin)
         }
       rescue => e
         warning("#{project}: #{e}")
@@ -671,11 +673,7 @@ EOM
       results[project] = entry
     end
 
-#require 'pry-byebug'
-#binding.pry
-
     report_results(results)
-
 
     puts("STOP TIME: #{Time.now}")
     return 0

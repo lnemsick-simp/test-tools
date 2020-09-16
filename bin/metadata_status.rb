@@ -75,7 +75,7 @@ class MetadataStatusGenerator
 
         # make sure R10K cache is current, as that is what populates R10K 'thin' git repos
         # used in the module sync operation
-#TODO do I need to do this?
+        #TODO do I need to do this?
         unless mod[:r10k_cache].synced?
           mod[:r10k_cache].sync
         end
@@ -96,6 +96,7 @@ class MetadataStatusGenerator
   end
 
   def get_modules_metadata
+    #FIXME this directory should be pulled from the Puppetfile
     modules_dir = File.join(@options[:root_dir], 'src', 'puppet', 'modules')
     modules_metadata = {}
 
@@ -137,21 +138,35 @@ class MetadataStatusGenerator
       end
     end
 
-    versions
+    # NOTE: this doesn't detect skipped OS versions
+    [ versions[0], versions[-1] ]
   end
 
   def get_puppet_versions(metadata)
-    versions = 'any'
+    min = 'any'
+    max = 'any'
+
     if metadata.has_key?('requirements')
       metadata['requirements'].each do |req|
         if req.has_key?('name') && req['name'] == 'puppet'
-          versions = req['version_requirement']
+          version_string = req['version_requirement']
+
+          # FIXME this min/max logic is a hack
+          if version_string.include?('>=')
+            match = version_string.match(/>=(\s)*([0-9]+\.[0-9]+\.[0-9]+)/)
+            min = match[2]
+          end
+
+          if version_string.include?('<')
+            max = version_string.split('<')[1].strip
+          end
+
           break
         end
       end
     end
 
-    versions
+    [ min, max ]
   end
 
   def load_module_metadata( file_path = nil )
@@ -259,11 +274,16 @@ class MetadataStatusGenerator
       'Version',
       'GitHub Ref',
       'SIMP Owned?',
-      'CentOS Versions',
-      'RHEL Versions',
-      'OEL Versions',
-      'Puppet Versions'
+      'CentOS Min Version',
+      'CentOS Max Version (Incl)',
+      'RHEL Min Version',
+      'RHEL Max Version (Incl)',
+      'OEL Min Version',
+      'OEL Max Version (Incl)',
+      'Puppet Min Version',
+      'Puppet Max Version (Excl)'
     ]
+
     info(columns.compact.join(','))
     results.sort
     results.sort_by { |proj_name, proj_info| proj_name }.each do |proj_name, proj_info|
@@ -272,11 +292,16 @@ class MetadataStatusGenerator
         proj_info[:version],
         proj_info[:git_ref],
         proj_info[:simp_owned],
-        proj_info[:centos_versions].join(' '),
-        proj_info[:rhel_versions].join(' '),
-        proj_info[:oel_versions].join(' '),
-        proj_info[:puppet_versions]
+        proj_info[:centos_min_version],
+        proj_info[:centos_max_version],
+        proj_info[:rhel_min_version],
+        proj_info[:rhel_max_version],
+        proj_info[:oel_min_version],
+        proj_info[:oel_max_version],
+        proj_info[:puppet_min_version],
+        proj_info[:puppet_max_version]
       ]
+
       info(project_data.compact.join(','))
     end
   end
@@ -304,14 +329,23 @@ class MetadataStatusGenerator
           git_origin, git_ref = get_git_info
         end
 
+        centos_versions = get_os_versions('CentOS', metadata)
+        rhel_versions = get_os_versions('RedHat', metadata)
+        oel_versions = get_os_versions('OracleLinux', metadata)
+        puppet_versions = get_puppet_versions(metadata)
+
         entry = {
-          :version         => metadata['version'],
-          :git_ref         => git_ref,
-          :simp_owned      => metadata[:simp_owned],
-          :centos_versions => get_os_versions('CentOS', metadata),
-          :rhel_versions   => get_os_versions('RedHat', metadata),
-          :oel_versions    => get_os_versions('OracleLinux', metadata),
-          :puppet_versions => get_puppet_versions(metadata)
+          :version            => metadata['version'],
+          :git_ref            => git_ref,
+          :simp_owned         => metadata[:simp_owned],
+          :centos_min_version => centos_versions[0],
+          :centos_max_version => centos_versions[1],
+          :rhel_min_version   => rhel_versions[0],
+          :rhel_max_version   => rhel_versions[1],
+          :oel_min_version    => oel_versions[0],
+          :oel_max_version    => oel_versions[1],
+          :puppet_min_version => puppet_versions[0],
+          :puppet_max_version => puppet_versions[1],
         }
       rescue => e
         warning("#{name}: #{e}")
@@ -327,14 +361,24 @@ class MetadataStatusGenerator
         }
       end
 
+      if entry[:simp_owned]
+        validate_versions(entry[:centos_min_version],
+          entry[:rhel_min_version],
+          entry[:oel_min_version],
+          "#{name} minimum"
+        )
+
+        validate_versions(entry[:centos_max_version],
+          entry[:rhel_max_version],
+          entry[:oel_max_version],
+          "#{name} maximum"
+        )
+      end
+
       results[name] = entry
     end
 
-#require 'pry-byebug'
-#binding.pry
-
     report_results(results)
-
 
     puts("STOP TIME: #{Time.now}")
     return 0
@@ -353,6 +397,12 @@ class MetadataStatusGenerator
     $stderr.puts("\n#{e.message}")
     e.backtrace.first(10).each{|l| $stderr.puts l }
     return 1
+  end
+
+  def validate_versions(centos_ver, rhel_ver, oel_ver, description)
+    if [centos_ver, rhel_ver, oel_ver].uniq.size != 1
+      warning("#{description} version discrepancy CentOS=#{centos_ver} RHEL=#{rhel_ver} OEL=#{oel_ver}")
+    end
   end
 
 end

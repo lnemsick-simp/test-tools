@@ -132,7 +132,7 @@ $options = {
   :endpoint  => (ENV['GITLAB_URL'] || 'https://gitlab.com/api/v4'),
   :org       => 'simp',
   :report_on => 'master',
-  :debug     => false
+  :verbose   => false
 }
 
 OptionParser.new do |opts|
@@ -199,21 +199,31 @@ org_pipelines = {}
 # it doesn't really matter if you ask for too many pages, the extras will return empty
 (1..8).each do |page|
 #  threads << Thread.new do
-    puts "Retrieving #{$options[:org]} project list page #{page}" if $options[:debug]
+    puts "Retrieving #{$options[:org]} project list page #{page}" if $options[:verbose]
 #    org_projects_page = g.group_projects($options[:org], page: page) || []
     org_projects_page = g.group_projects($options[:org], page: page)
     if org_projects_page
       org_projects = org_projects_page
     else
-puts "EMPTY PAGE RETURNED #{org_projects_page.inspect}"
+      puts "EMPTY PAGE RETURNED #{org_projects_page.inspect}"
       org_projects = []
     end
+
     org_projects.each do |proj|
-      puts ">> Retrieving #{proj.name} pipelines" if $options[:debug]
+      next if proj.path_with_namespace == 'simp/gitlab-oss'
+
+      puts ">> Retrieving #{proj.name} last ref" if $options[:verbose]
+      gitlab_ref = nil
+      commits = g.repo_commits(proj.id, page: 1)
+      if commits
+        gitlab_ref = commits[0].to_hash['id']
+      end
+
+      puts ">> Retrieving #{proj.name} pipelines" if $options[:verbose]
       pipelines = g.pipelines(proj.id)
       pipeline = get_pipeline($options[:report_on], pipelines)
       if pipeline
-        puts ">>>> Retrieving #{proj.name} pipeline jobs" if $options[:debug]
+        puts ">>>> Retrieving #{proj.name} pipeline jobs" if $options[:verbose]
         jobs = g.pipeline_jobs(proj.id, pipeline.id)
       else
         jobs = nil
@@ -221,6 +231,7 @@ puts "EMPTY PAGE RETURNED #{org_projects_page.inspect}"
 
       org_pipelines[proj.name] = {
         project: proj,
+        ref: gitlab_ref,
         pipeline: pipeline,
         jobs: jobs
       }

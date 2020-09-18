@@ -98,7 +98,10 @@ class ReferenceMdStatusGenerator
   end
 
   def reference_md_current?
-    return :missing unless File.exist?('REFERENCE.md')
+    unless File.exist?('REFERENCE.md')
+      warning("REFERENCE.md not present in #{Dir.pwd}")
+      return :missing
+    end
 
     debug("Checking for REFERENCE.md updates in #{Dir.pwd}")
 

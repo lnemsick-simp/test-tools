@@ -1,0 +1,5 @@
+{ gpg2 --keyserver hkp://pgp.mit.edu --recv-keys 409B6B1796C275462A1703113804BB82D39DC0E3 || gpg2 --keyserver hkp://keys.gnupg.net --recv-keys 409B6B1796C275462A1703113804BB82D39DC0E3; }; key1=$?; { gpg2 --keyserver hkp://pgp.mit.edu --recv-keys 7D2BAF1CF37B13E2069D6956105BD0E739499BDB || gpg2 --keyserver hkp://keys.gnupg.net --recv-keys 7D2BAF1CF37B13E2069D6956105BD0E739499BDB ; }; key2=$? ; [ "$key1" -eq 0 ] || [ "$key2" -eq 0 ] || curl -sSL https://rvm.io/mpapis.asc | gpg --import -
+gpg2 --refresh-keys
+echo 409B6B1796C275462A1703113804BB82D39DC0E3:6: | gpg2 --import-ownertrust; key1=$?; echo 7D2BAF1CF37B13E2069D6956105BD0E739499BDB:6: | gpg2 --import-ownertrust; key2=$?; [ "$key1" -eq 0 ] || [ "$key2" -eq 0 ]
+curl -sSL https://raw.githubusercontent.com/rvm/rvm/stable/binscripts/rvm-installer -o rvm-installer && curl -sSL https://raw.githubusercontent.com/rvm/rvm/stable/binscripts/rvm-installer.asc -o rvm-installer.asc && gpg2 --verify rvm-installer.asc rvm-installer && bash rvm-installer
+

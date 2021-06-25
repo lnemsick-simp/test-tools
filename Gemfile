@@ -22,10 +22,10 @@ gem 'coderay'
 gem 'colorize'
 gem 'dotenv'
 gem 'gitlab'
-gem 'json', '~> 1.8'
+gem 'json', '>= 2.3.0'
 gem 'metadata-json-lint'
 gem 'parallel'
-gem 'puppet', ENV.fetch('PUPPET_VERSION', '~> 5')
+gem 'puppet', ENV.fetch('PUPPET_VERSION', '~> 6')
 gem 'puppet-lint'
 gem 'puppet-strings'
 gem 'puppetlabs_spec_helper'

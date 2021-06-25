@@ -133,6 +133,8 @@ class SimpReleaseStatusGenerator
       :root_dir                => File.expand_path('.'),
       :output_file             => 'simp_component_release_status.csv',
       :clean_start             => true,
+      :release_status          => true,
+      :test_status             => true,
       :verbose                 => false,
       :help_requested          => false
     }
@@ -511,6 +513,20 @@ class SimpReleaseStatusGenerator
       end
 
       opts.on(
+        '--no-release-status',
+        'Do not verify module and RPM release/publication'
+      ) do
+        @options[:release_status] = false
+      end
+
+      opts.on(
+        '--no-test-status',
+        'Do not query GitLab for test status'
+      ) do
+        @options[:test_status] = false
+      end
+
+      opts.on(
         '-v', '--verbose',
         'Print all commands executed'
       ) do
@@ -544,13 +560,13 @@ class SimpReleaseStatusGenerator
       'Proposed Version',
       (@last_release_mods.nil?) ? nil : 'Version in Last SIMP',
 #      'Latest Version',
-#      'Unit Test Status',
       'GitLab Current',
-      'GitLab Test Status',
-      'GitLab Failed Jobs',
-      'GitHub Released',
-      'Forge Released',
-      'RPM Released',
+      @options[:test_status] ? 'GitLab Test Status' : nil,
+      @options[:test_status] ? 'GitLab Failed Jobs' : nil,
+      @options[:release_status] ? 'GitHub Released' : nil,
+      @options[:release_status] ? 'Forge Released' : nil,
+# RPM release checke needs to be fixed
+#      @options[:release_status] ? 'RPM Released' : nil,
       'Changelog'
     ]
     info(columns.compact.join(','))
@@ -560,13 +576,13 @@ class SimpReleaseStatusGenerator
         proj_info[:latest_version],
         (@last_release_mods.nil?) ? nil : proj_info[:version_last_simp_release],
 #        proj_info[:latest_version],
-#        proj_info[:travis_test_status],
         proj_info[:gitlab_current],
-        proj_info[:gitlab_test_status],
-        proj_info[:gitlab_failed_jobs],
-        translate_status(proj_info[:github_released]),
-        translate_status(proj_info[:forge_released]),
-        translate_status(proj_info[:rpm_released]),
+        @options[:test_status] ? proj_info[:gitlab_test_status] : nil,
+        @options[:test_status] ? proj_info[:gitlab_failed_jobs] : nil,
+        @options[:release_status] ? translate_status(proj_info[:github_released]) : nil,
+        @options[:release_status] ? translate_status(proj_info[:forge_released]) : nil,
+# RPM release checke needs to be fixed
+#        @options[:release_status].nil? nil : translate_status(proj_info[:rpm_released]),
         proj_info[:changelog_url],
       ]
       info(project_data.compact.join(','))
@@ -577,7 +593,7 @@ class SimpReleaseStatusGenerator
     parse_command_line(args)
     return 0 if @options[:help_requested] # already have logged help
 
-    if ENV['GITHUB_ACCESS_TOKEN'].nil?
+    if ENV['GITHUB_ACCESS_TOKEN'].nil? && @options[:release_status]
       msg = <<EOM
 GITHUB_ACCESS_TOKEN environment variable not detected.
 
@@ -590,7 +606,8 @@ EOM
       warning(msg)
     end
 
-    if ENV['GITLAB_ACCESS_TOKEN'].nil?
+#FIXME GITLAB_ACCESS_TOKEN also used for git ref comparisons
+    if ENV['GITLAB_ACCESS_TOKEN'].nil? & @options[:test_status]
       msg = <<EOM
 GITLAB_ACCESS_TOKEN environment variable not detected.
 No acceptance test results will be pulled from GitLab.
@@ -632,25 +649,30 @@ EOM
           end
         end
 
-        gitlab_test_status, gitlab_failed_jobs = get_gitlab_test_status(git_origin)
-
         entry = {
           :latest_version     => proj_info.version,
-          :travis_test_status   => 'TBD',  # need to pull from TravisCI
           :gitlab_current     => gitlab_ref.nil? ? 'N/A' : (git_ref == gitlab_ref),
-          :gitlab_test_status => gitlab_test_status,
-          :gitlab_failed_jobs => gitlab_failed_jobs,
-          :github_released    => get_release_status(proj_info, git_origin),
-          :forge_released     => get_forge_status(proj_info),
-          :rpm_released       => get_rpm_status(proj_info),
           :changelog_url      => get_changelog_url(proj_info, git_origin)
         }
+
+        if @options[:test_status]
+          gitlab_test_status, gitlab_failed_jobs = get_gitlab_test_status(git_origin)
+          entry[:gitlab_test_status] = gitlab_test_status
+          entry[:gitlab_failed_jobs] = gitlab_failed_jobs
+        end
+
+        if @options[:release_status]
+          entry[:github_released] = get_release_status(proj_info, git_origin)
+          entry[:forge_released] = get_forge_status(proj_info)
+# RPM release checke needs to be fixed
+#          entry[:rpm_released] = get_rpm_status(proj_info)
+        end
+
       rescue => e
         warning("#{project}: #{e}")
         debug(e.backtrace.join("\n"))
         entry = {
           :latest_version     => :unknown,
-          :travis_test_status   => :unknown,
           :gitlab_current     => :unknown,
           :gitlab_test_status => :unknown,
           :gitlab_failed_jobs => :unknown,

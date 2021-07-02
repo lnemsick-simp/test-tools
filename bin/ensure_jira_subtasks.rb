@@ -30,7 +30,8 @@ class JiraHelper
     story_points_field_id = custom_field_id(%r{^story points}i)
     subtask_issuetype_id  = issuetype_id(%r{^Sub-task}i)
 
-    st_summary      = subtask_opts[:subtask_title].gsub('%COMPONENT%', component_name)
+    short_component_name = component_name.gsub(/^pupmod-simp-/,'simp/')
+    st_summary      = subtask_opts[:subtask_title].gsub('%COMPONENT%', short_component_name)
     st_description  = (subtask_opts[:subtask_description]) ? subtask_opts[:subtask_description].gsub('%COMPONENT%', component_name) : nil
     st_story_points = (subtask_opts[:subtask_story_points]) ? subtask_opts[:subtask_story_points] : nil
 
@@ -97,6 +98,7 @@ class JiraHelper
            " AND component = #{component_name}" \
            ' AND statuscategory != done' + # FIXME: remains to be seen if this is necessary
            ' AND statuscategory != undefined'
+puts _jql
     @client.Issue.jql(_jql)
   end
 

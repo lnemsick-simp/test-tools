@@ -196,6 +196,36 @@ class SimpReleaseStatusGenerator
     gitlab_ref
   end
 
+  def get_gitlab_pipeline_jobs(pipeline_jobs)
+    passed_jobs_per_stage = {}
+    failed_jobs_per_stage = {}
+    pipeline_jobs.each do |job|
+      if job.status == 'failed'
+        unless failed_jobs_per_stage.key?(job.stage)
+          failed_jobs_per_stage[job.stage] = []
+        end
+        failed_jobs_per_stage[job.stage] << job.name
+      else
+        unless passed_jobs_per_stage.key?(job.stage)
+          passed_jobs_per_stage[job.stage] = []
+        end
+        passed_jobs_per_stage[job.stage] << job.name
+      end
+    end
+
+    stage_successes = []
+    passed_jobs_per_stage.each_key do |stage|
+      stage_successes << "#{stage}:#{passed_jobs_per_stage[stage].join(' ')}"
+    end
+
+    stage_failures = []
+    failed_jobs_per_stage.each_key do |stage|
+      stage_failures << "#{stage}:#{failed_jobs_per_stage[stage].join(' ')}"
+    end
+
+    [ stage_successes.join(' ; '), stage_failures.join(' ; ') ]
+  end
+
   def get_gitlab_pipeline_failed_jobs(pipeline_jobs)
     failed_jobs_per_stage = {}
     pipeline_jobs.each do |job|
@@ -214,34 +244,38 @@ class SimpReleaseStatusGenerator
     stage_failures.join(' ; ')
   end
 
-  def get_gitlab_test_status(git_url)
+  def get_gitlab_test_status(git_url, git_ref)
     return 'TBD' if ENV['GITLAB_ACCESS_TOKEN'].nil?
     proj_name = File.basename(git_url, '.git')
 
     status = 'none'
+    passed_jobs = ''
     failed_jobs = ''
     begin
       proj = gitlab_client.project("#{GITLAB_ORG}/#{proj_name}")
       pipeline = gitlab_client.pipelines(proj.id).select { |p|
         (p.ref == 'master') &&
+        (p.sha == git_ref) &&
         ((p.status == 'success') || (p.status == 'failed'))
-      }.max_by{ |p| p.id }
+      }.max_by{ |p| p.updated_at }
+#      }.max_by{ |p| p.id }
       if pipeline
         debug(">>>> Retrieving #{proj.name} pipeline jobs for #{proj_name}")
         jobs = gitlab_client.pipeline_jobs(proj.id, pipeline.id)
         create_time = jobs.map { |job| job.created_at }.sort.first
-        failed_jobs = ''
-        if pipeline.status == 'failed'
-          failed_jobs = get_gitlab_pipeline_failed_jobs(jobs)
-        end
+        passed_jobs, failed_jobs = get_gitlab_pipeline_jobs(jobs)
         status = "#{pipeline.status.upcase} #{create_time} #{pipeline.web_url}"
+        unless passed_jobs.include?('acceptance:') || failed_jobs.include?('acceptance:')
+#FIXME Only true if .gitlab-ci.yml has acceptance jobs
+          status = "INCOMPLETE: #{status}"
+        end
       end
     rescue =>e
       # can happen if a GitLab project for the component does not exist
       msg = "Unable to get GitLab test status for #{proj_name}:\n  #{e.message}"
       warning(msg)
     end
-    [ status, failed_jobs ]
+    [ status, passed_jobs, failed_jobs ]
   end
 
   def get_git_info
@@ -562,6 +596,7 @@ class SimpReleaseStatusGenerator
 #      'Latest Version',
       'GitLab Current',
       @options[:test_status] ? 'GitLab Test Status' : nil,
+      @options[:test_status] ? 'GitLab Passed Jobs' : nil,
       @options[:test_status] ? 'GitLab Failed Jobs' : nil,
       @options[:release_status] ? 'GitHub Released' : nil,
       @options[:release_status] ? 'Forge Released' : nil,
@@ -578,6 +613,7 @@ class SimpReleaseStatusGenerator
 #        proj_info[:latest_version],
         proj_info[:gitlab_current],
         @options[:test_status] ? proj_info[:gitlab_test_status] : nil,
+        @options[:test_status] ? proj_info[:gitlab_passed_jobs] : nil,
         @options[:test_status] ? proj_info[:gitlab_failed_jobs] : nil,
         @options[:release_status] ? translate_status(proj_info[:github_released]) : nil,
         @options[:release_status] ? translate_status(proj_info[:forge_released]) : nil,
@@ -656,8 +692,9 @@ EOM
         }
 
         if @options[:test_status]
-          gitlab_test_status, gitlab_failed_jobs = get_gitlab_test_status(git_origin)
+          gitlab_test_status, gitlab_passed_jobs, gitlab_failed_jobs = get_gitlab_test_status(git_origin, git_ref)
           entry[:gitlab_test_status] = gitlab_test_status
+          entry[:gitlab_passed_jobs] = gitlab_passed_jobs
           entry[:gitlab_failed_jobs] = gitlab_failed_jobs
         end
 
@@ -675,10 +712,11 @@ EOM
           :latest_version     => :unknown,
           :gitlab_current     => :unknown,
           :gitlab_test_status => :unknown,
+          :gitlab_passed_jobs => :unknown,
           :gitlab_failed_jobs => :unknown,
           :github_released    => :unknown,
           :forge_released     => :unknown,
-          :rpm_released       => :unknown,
+          #:rpm_released       => :unknown,
           :changelog_url      => :unknown,
         }
       end

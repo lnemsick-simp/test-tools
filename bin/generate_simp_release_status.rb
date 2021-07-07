@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 #
+require 'date'
 require 'deep_merge'
 require 'fileutils'
 require 'gitlab'
@@ -404,9 +405,13 @@ class SimpReleaseStatusGenerator
       uri = URI(url)
       result = JSON.parse(Net::HTTP.get(uri))
       if result.key?('updated_at')
-        forge_published = result['updated_at']
+        timestamp = result['updated_at']
+        # using local time isn't kosher but helps maintainers who are largely
+        # in the same timezone
+        forge_published = DateTime.parse(timestamp).to_time.localtime.to_date.to_s
       elsif result.key?('created_at')
-        forge_published = result['created_at']
+        timestamp = result['created_at']
+        forge_published = DateTime.parse(timestamp).to_time.localtime.to_date.to_s
       else
         forge_published = :unreleased
       end
@@ -453,14 +458,17 @@ class SimpReleaseStatusGenerator
         debug(github_release_results.to_s)
         if github_release_results.key?('tag_name')
           if github_release_results.key?('published_at')
-            date = github_release_results['published_at']
+            timestamp = github_release_results['published_at']
+            # using local time isn't kosher but helps maintainers who are largely
+            # in the same timezone
+            DateTime.parse(timestamp).to_time.localtime.to_date.to_s
           else
             :released
           end
         else
-          if github_release_results['message'] and github_release_results['message'].match(/Not Found/i)
+          if github_release_results.key?('message') and github_release_results['message'].match(/Not Found/i)
             :tagged
-          elsif github_release_results['message'] and github_release_results['message'].match(/Moved Permanently/i)
+          elsif github_release_results.key?('message') and github_release_results['message'].match(/Moved Permanently/i)
             # In one odd case (simp-rsync_data_pre64) we work around the
             # Puppetfile limitation that only allows one entry per git URL
             # by using an old name for the repo. Unfortunately, the GitHub API

@@ -171,13 +171,19 @@ class SimpReleaseStatusGenerator
   # @return whether actual jobs run pass validator
   #
   # Validates
-  # * all validation jobs were run
+  # * when validation stage is configured, at least one unit test job was run
+  #   - Only detects unit test jobs containing 'unit' or 'test' in their name.
+  #   - FIXME Does not work for projects with other tests that do not conform
+  #     to this convention:
+  #     - simp-gpgkeys
+  #     - simp-rsync-skeleton
+  #     - simp-selinux_policy
   # * when acceptance stage is configured, at least 1 acceptance job was run
   # * when compliance stage is configured, at least 1 compliance job was run
   #
   def compare_gitlab_results(expected_jobs, passed_jobs, failed_jobs)
     all_jobs = passed_jobs.deep_merge(failed_jobs)
-    debug("Expected jobs=#{expected_jobs.to_yaml}")
+    debug("All possible jobs=#{expected_jobs.to_yaml}")
     debug("Actual jobs=#{all_jobs.to_yaml}")
 
     return false unless expected_jobs.keys.sort == all_jobs.keys.sort
@@ -190,8 +196,7 @@ class SimpReleaseStatusGenerator
         valid = false
       elsif (act_jobs - exp_jobs).empty?
         # make sure subset includes unit tests
-# FIXME Does not work for simp-gpgkeys, simp-rsync-skeleton, simp-selinux_policy
-        valid = false if exp_jobs.grep(/unit|test/).empty?
+        valid = false if act_jobs.grep(/unit|test/).empty?
       else
         # Shouldn't get here, but this means there are jobs that were run
         # that were not in the .gitlab-ci.yml <==> Different git ref.

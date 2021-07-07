@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 #
+require 'deep_merge'
 require 'fileutils'
 require 'gitlab'
 require 'json'
@@ -7,7 +8,9 @@ require 'net/http'
 require 'optparse'
 require 'parallel'
 require 'r10k/git'
+require 'set'
 require 'simp/componentinfo'
+require 'yaml'
 
 # Temporary monkey patch to extract RPM name and arch
 # FIXME Move appropriately into Simp::ComponentInfo::load_xxx_info()
@@ -120,7 +123,7 @@ class SimpReleaseStatusGenerator
 
   class InvalidModule < StandardError; end
   GITHUB_URL_BASE = 'https://github.com/simp/'
-  FORGE_URL_BASE  = 'https://forge.puppet.com/simp/'
+  FORGE_URL_BASE  = 'https://forgeapi.puppet.com/v3/releases/'
   PCLOUD_URL_BASE = 'https://packagecloud.io/simp-project/6_X/packages/el/'
   GITLAB_API_URL  = 'https://gitlab.com/api/v4'
   GITLAB_ORG      = 'simp'
@@ -165,6 +168,73 @@ class SimpReleaseStatusGenerator
     end
   end
 
+  # @return whether actual jobs run pass validator
+  #
+  # Validates
+  # * all validation jobs were run
+  # * when acceptance stage is configured, at least 1 acceptance job was run
+  # * when compliance stage is configured, at least 1 compliance job was run
+  #
+  def compare_gitlab_results(expected_jobs, passed_jobs, failed_jobs)
+    all_jobs = passed_jobs.deep_merge(failed_jobs)
+    debug("Expected jobs=#{expected_jobs.to_yaml}")
+    debug("Actual jobs=#{all_jobs.to_yaml}")
+
+    return false unless expected_jobs.keys.sort == all_jobs.keys.sort
+
+    valid = true
+    if expected_jobs.key?('validation')
+      exp_jobs = expected_jobs['validation'].sort
+      act_jobs = all_jobs['validation'].sort
+      if act_jobs.empty?
+        valid = false
+      elsif (act_jobs - exp_jobs).empty?
+        # make sure subset includes unit tests
+# FIXME Does not work for simp-gpgkeys, simp-rsync-skeleton, simp-selinux_policy
+        valid = false if exp_jobs.grep(/unit|test/).empty?
+      else
+        # Shouldn't get here, but this means there are jobs that were run
+        # that were not in the .gitlab-ci.yml <==> Different git ref.
+        valid = false
+      end
+    end
+
+    if expected_jobs.key?('acceptance')
+      exp_jobs = expected_jobs['acceptance'].sort
+      act_jobs = all_jobs['acceptance'].sort
+      if act_jobs.empty?
+        valid = false
+      elsif !(act_jobs - exp_jobs).empty?
+        # Shouldn't get here, but this means there are jobs that were run
+        # that were not in the .gitlab-ci.yml <==> Different git ref.
+        valid = false
+      end
+    end
+
+    if expected_jobs.key?('compliance')
+      exp_jobs = expected_jobs['compliance'].sort
+      act_jobs = all_jobs['compliance'].sort
+      if act_jobs.empty?
+        valid = false
+      elsif !(act_jobs - exp_jobs).empty?
+        # Shouldn't get here, but this means there are jobs that were run
+        # that were not in the .gitlab-ci.yml <==> Different git ref.
+        valid = false
+      end
+    end
+
+    valid
+  end
+
+  def format_job_results(jobs_hash)
+    jobs = []
+    jobs_hash.each_key do |stage|
+      jobs << "#{stage}:#{ jobs_hash[stage].join(' ')}"
+    end
+
+    jobs.join(' ; ')
+  end
+
 =begin
   def execute(command, log_command=true)
     info("Executing: #{command}") if log_command
@@ -175,6 +245,27 @@ class SimpReleaseStatusGenerator
     result
   end
 =end
+  # returns Array of stages for which results are expected
+  def get_configured_gitlab_jobs(gitlab_config_file)
+    config= YAML.load(File.read(gitlab_config_file))
+    jobs = {}
+    config.each { |key,value|
+      if value.is_a?(Hash) && value.key?('stage')
+        if (key != '.unit_tests') && (key != '.lint_tests') && (value['stage'] == 'validation')
+          jobs['validation'] = [] unless jobs.key?('validation')
+          jobs['validation'] << key
+        elsif (key != '.acceptance_base') && (value['stage'] == 'acceptance')
+          jobs['acceptance'] = [] unless jobs.key?('acceptance')
+          jobs['acceptance'] << key
+        elsif (key != '.compliance_base') && (value['stage'] == 'compliance')
+          jobs['compliance'] = [] unless jobs.key?('compliance')
+          jobs['compliance'] << key
+        end
+      end
+    }
+
+    jobs
+  end
 
   # returns the latest commit ref
   def get_gitlab_ref(git_url)
@@ -213,17 +304,7 @@ class SimpReleaseStatusGenerator
       end
     end
 
-    stage_successes = []
-    passed_jobs_per_stage.each_key do |stage|
-      stage_successes << "#{stage}:#{passed_jobs_per_stage[stage].join(' ')}"
-    end
-
-    stage_failures = []
-    failed_jobs_per_stage.each_key do |stage|
-      stage_failures << "#{stage}:#{failed_jobs_per_stage[stage].join(' ')}"
-    end
-
-    [ stage_successes.join(' ; '), stage_failures.join(' ; ') ]
+    [ passed_jobs_per_stage, failed_jobs_per_stage ]
   end
 
   def get_gitlab_pipeline_failed_jobs(pipeline_jobs)
@@ -244,7 +325,7 @@ class SimpReleaseStatusGenerator
     stage_failures.join(' ; ')
   end
 
-  def get_gitlab_test_status(git_url, git_ref)
+  def get_gitlab_test_status(git_url, git_ref, expected_jobs)
     return 'TBD' if ENV['GITLAB_ACCESS_TOKEN'].nil?
     proj_name = File.basename(git_url, '.git')
 
@@ -263,12 +344,14 @@ class SimpReleaseStatusGenerator
         debug(">>>> Retrieving #{proj.name} pipeline jobs for #{proj_name}")
         jobs = gitlab_client.pipeline_jobs(proj.id, pipeline.id)
         create_time = jobs.map { |job| job.created_at }.sort.first
-        passed_jobs, failed_jobs = get_gitlab_pipeline_jobs(jobs)
-        status = "#{pipeline.status.upcase} #{create_time} #{pipeline.web_url}"
-        unless passed_jobs.include?('acceptance:') || failed_jobs.include?('acceptance:')
-#FIXME Only true if .gitlab-ci.yml has acceptance jobs
-          status = "INCOMPLETE: #{status}"
+        passed_jobs_hash, failed_jobs_hash = get_gitlab_pipeline_jobs(jobs)
+        prefix = ''
+        unless compare_gitlab_results(expected_jobs, passed_jobs_hash, failed_jobs_hash)
+          prefix = 'INCOMPLETE '
         end
+        status = "#{prefix}#{pipeline.status.upcase} #{create_time} #{pipeline.web_url}"
+        passed_jobs = format_job_results(passed_jobs_hash)
+        failed_jobs = format_job_results(failed_jobs_hash)
       end
     rescue =>e
       # can happen if a GitLab project for the component does not exist
@@ -306,13 +389,22 @@ class SimpReleaseStatusGenerator
     query = Net::HTTP.new(uri.host, uri.port)
     query.use_ssl = true
     result = query.request_head(uri.path)
+    debug("Checking for #{url}:\n#{result}")
     (result.code == '200')
   end
 
   def get_forge_status(proj_info)
     if proj_info.type == :module
-      url = FORGE_URL_BASE + "#{File.basename(proj_info.component_dir)}/#{proj_info.version}/readme"
-      forge_published = (url_exists?(url)) ? :released : :unreleased
+      url = FORGE_URL_BASE + "simp-#{File.basename(proj_info.component_dir)}-#{proj_info.version}"
+      uri = URI(url)
+      result = JSON.parse(Net::HTTP.get(uri))
+      if result.key?('updated_at')
+        forge_published = result['updated_at']
+      elsif result.key?('created_at')
+        forge_published = result['created_at']
+      else
+        forge_published = :unreleased
+      end
     else
       forge_published = :not_applicable
     end
@@ -355,7 +447,11 @@ class SimpReleaseStatusGenerator
         github_release_results = JSON.parse(`#{cmd}`)
         debug(github_release_results.to_s)
         if github_release_results.key?('tag_name')
-          :released
+          if github_release_results.key?('published_at')
+            date = github_release_results['published_at']
+          else
+            :released
+          end
         else
           if github_release_results['message'] and github_release_results['message'].match(/Not Found/i)
             :tagged
@@ -593,14 +689,13 @@ class SimpReleaseStatusGenerator
       'Component',
       'Proposed Version',
       (@last_release_mods.nil?) ? nil : 'Version in Last SIMP',
-#      'Latest Version',
+      @options[:release_status] ? 'GitHub Released' : nil,
+      @options[:release_status] ? 'Forge Released' : nil,
       'GitLab Current',
       @options[:test_status] ? 'GitLab Test Status' : nil,
       @options[:test_status] ? 'GitLab Passed Jobs' : nil,
       @options[:test_status] ? 'GitLab Failed Jobs' : nil,
-      @options[:release_status] ? 'GitHub Released' : nil,
-      @options[:release_status] ? 'Forge Released' : nil,
-# RPM release checke needs to be fixed
+# RPM release check needs to be fixed
 #      @options[:release_status] ? 'RPM Released' : nil,
       'Changelog'
     ]
@@ -610,14 +705,13 @@ class SimpReleaseStatusGenerator
         project,
         proj_info[:latest_version],
         (@last_release_mods.nil?) ? nil : proj_info[:version_last_simp_release],
-#        proj_info[:latest_version],
+        @options[:release_status] ? translate_status(proj_info[:github_released]) : nil,
+        @options[:release_status] ? translate_status(proj_info[:forge_released]) : nil,
         proj_info[:gitlab_current],
         @options[:test_status] ? proj_info[:gitlab_test_status] : nil,
         @options[:test_status] ? proj_info[:gitlab_passed_jobs] : nil,
         @options[:test_status] ? proj_info[:gitlab_failed_jobs] : nil,
-        @options[:release_status] ? translate_status(proj_info[:github_released]) : nil,
-        @options[:release_status] ? translate_status(proj_info[:forge_released]) : nil,
-# RPM release checke needs to be fixed
+# RPM release check needs to be fixed
 #        @options[:release_status].nil? nil : translate_status(proj_info[:rpm_released]),
         proj_info[:changelog_url],
       ]
@@ -692,10 +786,20 @@ EOM
         }
 
         if @options[:test_status]
-          gitlab_test_status, gitlab_passed_jobs, gitlab_failed_jobs = get_gitlab_test_status(git_origin, git_ref)
-          entry[:gitlab_test_status] = gitlab_test_status
-          entry[:gitlab_passed_jobs] = gitlab_passed_jobs
-          entry[:gitlab_failed_jobs] = gitlab_failed_jobs
+          gitlab_config_file = File.join(project_dir, '.gitlab-ci.yml')
+          if File.exist?(gitlab_config_file)
+            expected_jobs = get_configured_gitlab_jobs(gitlab_config_file)
+            gitlab_test_status, gitlab_passed_jobs, gitlab_failed_jobs =
+              get_gitlab_test_status(git_origin, git_ref, expected_jobs)
+
+            entry[:gitlab_test_status] = gitlab_test_status
+            entry[:gitlab_passed_jobs] = gitlab_passed_jobs
+            entry[:gitlab_failed_jobs] = gitlab_failed_jobs
+          else
+            entry[:gitlab_test_status] = 'N/A'
+            entry[:gitlab_passed_jobs] = ''
+            entry[:gitlab_failed_jobs] = ''
+          end
         end
 
         if @options[:release_status]
@@ -765,7 +869,7 @@ EOM
     when :tagged_unknown_release_status
       'tagged but unknown release status'
     when :unknown_repo_moved
-      'unknown release status: permanently moved repo'
+      'unknown: permanently moved repo'
     when :not_applicable
       'N/A'
     else

@@ -340,12 +340,24 @@ class SimpReleaseStatusGenerator
     failed_jobs = ''
     begin
       proj = gitlab_client.project("#{GITLAB_ORG}/#{proj_name}")
-      pipeline = gitlab_client.pipelines(proj.id).select { |p|
+
+      # Retrieve the pipelines for the git ref on the master branch sorted by
+      # the number of jobs in the pipeline.
+      pipelines = gitlab_client.pipelines(proj.id).select { |p|
         (p.ref == 'master') &&
         (p.sha == git_ref) &&
         ((p.status == 'success') || (p.status == 'failed'))
-      }.max_by{ |p| p.updated_at }
-#      }.max_by{ |p| p.id }
+      }.sort_by{ |p| gitlab_client.pipeline_jobs(proj.id, p.id).size }
+
+      pipeline = nil
+      unless pipelines.empty?
+        # Find the latest job with the maximum number of jobs. Need to do this
+        # to cull scheduled pipelines that run very few jobs.
+        max_jobs = gitlab_client.pipeline_jobs(proj.id, pipelines.last.id).size
+        pipelines.delete_if { |p| gitlab_client.pipeline_jobs(proj.id, p.id).size != max_jobs }
+        pipeline = pipelines.max_by{ |p| p.updated_at }
+      end
+
       if pipeline
         debug(">>>> Retrieving #{proj.name} pipeline jobs for #{proj_name}")
         jobs = gitlab_client.pipeline_jobs(proj.id, pipeline.id)

@@ -810,11 +810,31 @@ EOM
           :changelog_url      => get_changelog_url(proj_info, git_origin)
         }
 
+        if @options[:release_status]
+          entry[:github_released] = get_release_status(proj_info, git_origin)
+          entry[:forge_released] = get_forge_status(proj_info)
+# RPM release check needs to be fixed
+#          entry[:rpm_released] = get_rpm_status(proj_info)
+          if entry[:github_released].to_s.match(/unreleased|unknown_repo_moved/).nil?
+            # Component is released, but may have changes to static assets or
+            # tests beyond the tag that didn't warrant a change to the version.
+            # So, need to use the git ref for the tag when finding test results.
+            Dir.chdir(project_dir) do
+              `git checkout -q tags/#{proj_info.version}`
+              git_origin, git_ref = get_git_info
+            end
+          end
+        end
+
         if @options[:test_status]
           gitlab_config_file = File.join(project_dir, '.gitlab-ci.yml')
           if File.exist?(gitlab_config_file)
             expected_jobs = get_configured_gitlab_jobs(gitlab_config_file)
             gitlab_test_status, gitlab_passed_jobs, gitlab_failed_jobs =
+if project.include?('acpid')
+require 'pry-byebug'
+binding.pry
+end
               get_gitlab_test_status(git_origin, git_ref, expected_jobs)
 
             entry[:gitlab_test_status] = gitlab_test_status
@@ -825,13 +845,6 @@ EOM
             entry[:gitlab_passed_jobs] = ''
             entry[:gitlab_failed_jobs] = ''
           end
-        end
-
-        if @options[:release_status]
-          entry[:github_released] = get_release_status(proj_info, git_origin)
-          entry[:forge_released] = get_forge_status(proj_info)
-# RPM release checke needs to be fixed
-#          entry[:rpm_released] = get_rpm_status(proj_info)
         end
 
       rescue => e

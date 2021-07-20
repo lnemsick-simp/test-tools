@@ -134,6 +134,7 @@ class SimpReleaseStatusGenerator
     @options = {
       :puppetfile              => nil,
       :last_release_puppetfile => nil,
+      :show_interim_versions => true,
       :root_dir                => File.expand_path('.'),
       :output_file             => 'simp_component_release_status.csv',
       :clean_start             => true,
@@ -142,6 +143,8 @@ class SimpReleaseStatusGenerator
       :verbose                 => false,
       :help_requested          => false
     }
+
+    @interim_mods = nil
     @last_release_mods = nil
     @github_api_limit_reached = false
   end
@@ -581,6 +584,23 @@ class SimpReleaseStatusGenerator
     end
   end
 
+  # Get the versions of components from the lastest Puppetfile.pinned
+  # in simp-core
+  # Any version not explicitly specified will be set to 'latest'
+  def get_interim_versions
+    FileUtils.rm_rf('simp-core')
+    `git clone -q #{GITHUB_URL_BASE}/simp-core`
+    @interim_mods = {}
+    helper = PuppetfileHelper.new(File.join('simp-core', 'Puppetfile.pinned'), @options[:root_dir], false)
+    helper.modules.each do |mod|
+      if mod[:desired_ref].match(/master|main/)
+        @interim_mods[mod[:name]] = 'latest'
+      else
+        @interim_mods[mod[:name]] = mod[:desired_ref]
+      end
+    end
+  end
+
   # Get the last versions of components from a SIMP release Puppetfile
   def get_last_versions
     @last_release_mods = {}
@@ -657,6 +677,13 @@ class SimpReleaseStatusGenerator
         @options[:last_release_puppetfile] = File.expand_path(puppetfile)
       end
 
+      opts.on(
+        '-i', '--[no-]show-interim-versions',
+        'Show pinned versions in pre-release simp-core Puppetfile.',
+        "Defaults to #{@options[:show_interim_versions]}."
+      ) do |show_interim_versions|
+        @options[:show_interim_versions] = show_interim_versions
+      end
 
       opts.on(
         '-s', '--[no-]clean-start',
@@ -713,6 +740,7 @@ class SimpReleaseStatusGenerator
     columns = [
       'Component',
       'Proposed Version',
+      (@interim_mods.nil?) ? nil : 'Current Pinned Version',
       (@last_release_mods.nil?) ? nil : 'Version in Last SIMP',
       @options[:release_status] ? 'GitHub Released' : nil,
       @options[:release_status] ? 'Forge Released' : nil,
@@ -729,6 +757,7 @@ class SimpReleaseStatusGenerator
       project_data = [
         project,
         proj_info[:latest_version],
+        (@interim_mods.nil?) ? nil : proj_info[:version_interim],
         (@last_release_mods.nil?) ? nil : proj_info[:version_last_simp_release],
         @options[:release_status] ? translate_status(proj_info[:github_released]) : nil,
         @options[:release_status] ? translate_status(proj_info[:forge_released]) : nil,
@@ -775,6 +804,7 @@ EOM
     puts("START TIME: #{Time.now}")
 
     get_last_versions if @options[:last_release_puppetfile]
+    get_interim_versions if @options[:show_interim_versions]
     check_out_projects if @options[:clean_start]
 
     results = {}
@@ -831,10 +861,6 @@ EOM
           if File.exist?(gitlab_config_file)
             expected_jobs = get_configured_gitlab_jobs(gitlab_config_file)
             gitlab_test_status, gitlab_passed_jobs, gitlab_failed_jobs =
-if project.include?('acpid')
-require 'pry-byebug'
-binding.pry
-end
               get_gitlab_test_status(git_origin, git_ref, expected_jobs)
 
             entry[:gitlab_test_status] = gitlab_test_status
@@ -864,12 +890,20 @@ end
       end
 
       if @last_release_mods
-        if @last_release_mods[project]
+        if @last_release_mods.key?(project)
           last_version_in_simp = @last_release_mods[project]
         else
           last_version_in_simp = 'N/A'
         end
         entry[:version_last_simp_release] = last_version_in_simp
+      end
+
+      if @interim_mods
+        if @interim_mods.key?(project)
+          entry[:version_interim] = @interim_mods[project]
+        else
+          entry[:version_interim] = 'N/A'
+        end
       end
 
       results[project] = entry

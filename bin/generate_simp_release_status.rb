@@ -27,7 +27,7 @@ module Simp
         metadata = JSON.parse(File.read(metadata_file))
         @rpm_name = "pupmod-#{metadata['name']}"
       else
-        # Some assets us LUA in their spec files to read a top-level CHANGELOG.
+        # Some assets use LUA in their spec files to read a top-level CHANGELOG.
         # So, have to be in the component directory for the RPM query to work
         # and use a relative path for the spec file.
         Dir.chdir(@component_dir) do
@@ -88,12 +88,12 @@ class PuppetfileHelper
 
   require 'r10k/puppetfile'
 
-  def initialize(puppetfile, root_dir, purge_cache = true)
+  def initialize(puppetfile, work_dir, purge_cache = true)
     @modules = []
     @gitlab_client = nil
 
-    Dir.chdir(root_dir) do
-      cache_dir = File.join(root_dir,'.r10k_cache')
+    Dir.chdir(work_dir) do
+      cache_dir = File.join(work_dir,'.r10k_cache')
       FileUtils.rm_rf(cache_dir) if purge_cache
       FileUtils.mkdir_p(cache_dir)
       R10K::Git::Cache.settings[:cache_root] = cache_dir
@@ -128,6 +128,7 @@ class SimpReleaseStatusGenerator
   PCLOUD_URL_BASE = 'https://packagecloud.io/simp-project/6_X/packages/el/'
   GITLAB_API_URL  = 'https://gitlab.com/api/v4'
   GITLAB_ORG      = 'simp'
+  PROJECTS_TO_SKIP = [ 'vox_selinux', 'rsync_data_pre64' ]
 
   def initialize
 
@@ -135,7 +136,7 @@ class SimpReleaseStatusGenerator
       :puppetfile              => nil,
       :last_release_puppetfile => nil,
       :show_interim_versions => true,
-      :root_dir                => File.expand_path('workdir'),
+      :work_dir                => File.expand_path('workdir'),
       :output_file             => 'simp_component_release_status.csv',
       :clean_start             => true,
       :release_status          => true,
@@ -150,12 +151,12 @@ class SimpReleaseStatusGenerator
   end
 
   def check_out_projects
-    debug("Preparing a clean projects checkout at #{@options[:root_dir]}")
-    FileUtils.rm_rf(File.join(@options[:root_dir], 'src'))
+    debug("Preparing a clean projects checkout at #{@options[:work_dir]}")
+    FileUtils.rm_rf(File.join(@options[:work_dir], 'src'))
 
-    helper = PuppetfileHelper.new(@options[:puppetfile], @options[:root_dir])
+    helper = PuppetfileHelper.new(@options[:puppetfile], @options[:work_dir])
     Parallel.map( Array(helper.modules), :progress => 'Submodule Checkout') do |mod|
-      Dir.chdir(@options[:root_dir]) do
+      Dir.chdir(@options[:work_dir]) do
         FileUtils.mkdir_p(mod[:path])
 
         # make sure R10K cache is current, as that is what populates R10K 'thin' git repos
@@ -535,7 +536,7 @@ class SimpReleaseStatusGenerator
   end
 
   def get_simp_owned_modules
-    modules_dir = File.join(@options[:root_dir], 'src', 'puppet', 'modules')
+    modules_dir = File.join(@options[:work_dir], 'src', 'puppet', 'modules')
     simp_modules = []
 
     return simp_modules unless Dir.exist?(modules_dir)
@@ -557,7 +558,7 @@ class SimpReleaseStatusGenerator
   end
 
   def get_assets
-    assets_dir = File.join(@options[:root_dir], 'src', 'assets')
+    assets_dir = File.join(@options[:work_dir], 'src', 'assets')
     return [] unless Dir.exist?(assets_dir)
     assets = Dir.entries(assets_dir).delete_if { |dir| dir[0] == '.' }
     assets.map! { |asset| File.expand_path(File.join(assets_dir, asset)) }
@@ -587,10 +588,11 @@ class SimpReleaseStatusGenerator
   # in simp-core
   # Any version not explicitly specified will be set to 'latest'
   def get_interim_versions
-    FileUtils.rm_rf("#{@options[:root_dir]}/simp-core")
-    `git clone -q #{GITHUB_URL_BASE}/simp-core #{@options[:root_dir]}/simp-core`
+    debug("Retrieving pinned component versions from latest simp-core/Puppetfile.pinned")
+    FileUtils.rm_rf("#{@options[:work_dir]}/simp-core")
+    `git clone -q #{GITHUB_URL_BASE}/simp-core #{@options[:work_dir]}/simp-core`
     @interim_mods = {}
-    helper = PuppetfileHelper.new(File.join('simp-core', 'Puppetfile.pinned'), @options[:root_dir], false)
+    helper = PuppetfileHelper.new(File.join('simp-core', 'Puppetfile.pinned'), @options[:work_dir], false)
     helper.modules.each do |mod|
       if mod[:desired_ref].match(/master|main/)
         @interim_mods[mod[:name]] = 'latest'
@@ -602,8 +604,9 @@ class SimpReleaseStatusGenerator
 
   # Get the last versions of components from a SIMP release Puppetfile
   def get_last_versions
+    debug("Retrieving component versions from #{@options[:last_release_puppetfile]}")
     @last_release_mods = {}
-    helper = PuppetfileHelper.new(@options[:last_release_puppetfile], @options[:root_dir], false)
+    helper = PuppetfileHelper.new(@options[:last_release_puppetfile], @options[:work_dir], false)
     helper.modules.each do |mod|
       @last_release_mods[mod[:name]] = mod[:desired_ref]
     end
@@ -617,45 +620,55 @@ class SimpReleaseStatusGenerator
   end
 
   def info(msg)
+    puts(msg)
     log(msg)
   end
 
   def warning(msg)
     message = msg.gsub(/WARNING./,'')
     $stderr.puts("WARNING: #{message}")
-    log("WARNING: #{message}") if @options[:verbose]
+    log("WARNING: #{message}")
+  end
+
+  def error(msg)
+    message = msg.gsub(/ERROR./,'')
+    $stderr.puts("ERROR: #{message}")
+    log("ERROR: #{message}")
   end
 
   def log(msg)
     unless @log_file
-      @log_file = File.open(@options[:output_file], 'w')
+      puts "Messages will be logged to #{@options[:log_file]}"
+      @log_file = File.open(@options[:log_file], 'w')
     end
     @log_file.puts(msg) unless msg.nil?
     @log_file.flush
   end
 
   def parse_command_line(args)
-
    program = File.basename(__FILE__)
     opt_parser = OptionParser.new do |opts|
       opts.banner = [
-        "Usage: GITHUB_ACCESS_TOKEN=USER_API_TOKEN #{program} [OPTIONS] -p PUPPETFILE",
-        '         OR (release info incomplete due to GitHub rate limiting)',
-        "       #{program} [OPTIONS] -p PUPPETFILE"
+        "Usage: GITHUB_ACCESS_TOKEN=USER_GITHUB_API_TOKEN \\",
+        "       GITLAB_ACCESS_TOKEN=USER_GITLAB_API_TOKEN \\",
+        "       #{program} [OPTIONS]",
+        '         OR (release info incomplete)',
+        "       #{program} [OPTIONS]"
       ].join("\n")
       opts.separator ''
 
       opts.on(
-        '-d', '--root-dir ROOT_DIR',
-        'Root directory in which projects will be checked out.',
-        "Defaults to '<current dir>/workdir'."
-      ) do |root_dir|
-        @options[:root_dir] = File.expand_path(root_dir)
+        '-d', '--work-dir WORK_DIR',
+        'Working directory in which projects will be checked out.',
+        "Defaults to '<current dir>/#{File.basename(@options[:work_dir])}'."
+      ) do |work_dir|
+        @options[:work_dir] = File.expand_path(work_dir)
       end
 
       opts.on(
         '-o', '--outfile OUTFILE',
-        "Output file. Defaults to #{@options[:output_file]}"
+        "Results output file. Log file will be '<OUTFILE>.log.'",
+        "Defaults to #{@options[:output_file]}"
       ) do |output_file|
         @options[:output_file] = File.expand_path(output_file)
       end
@@ -724,18 +737,19 @@ class SimpReleaseStatusGenerator
     begin
       opt_parser.parse!(args)
 
+      @options[:log_file] = @options[:output_file] + '.log'
+
       unless @options[:help_requested]
         raise ('Puppetfile containing all components must be specified') if @options[:puppetfile].nil?
       end
     rescue RuntimeError,OptionParser::ParseError => e
       raise "#{e.message}\n#{opt_parser.to_s}"
     end
-  ensure
-    @log_file.close unless @log_file.nil?
   end
 
   def report_results(results)
-    debug('-'*10)
+    info("Writing results to #{@options[:output_file]}")
+    @output_file = File.open(@options[:output_file], 'w')
     columns = [
       'Component',
       'Proposed Version',
@@ -751,7 +765,7 @@ class SimpReleaseStatusGenerator
 #      @options[:release_status] ? 'RPM Released' : nil,
       'Changelog'
     ]
-    info(columns.compact.join(','))
+    @output_file.puts(columns.compact.join(','))
     results.each do |project, proj_info|
       project_data = [
         project,
@@ -768,8 +782,10 @@ class SimpReleaseStatusGenerator
 #        @options[:release_status].nil? nil : translate_status(proj_info[:rpm_released]),
         proj_info[:changelog_url],
       ]
-      info(project_data.compact.join(','))
+      @output_file.puts(project_data.compact.join(','))
     end
+  ensure
+    @output_file.close unless @output_file.nil?
   end
 
   def run(args)
@@ -798,20 +814,27 @@ EOM
       warning(msg)
     end
 
+    info("START TIME: #{Time.now}")
     debug("Running with options = <#{args.join(' ')}>") unless args.empty?
     debug("Internal options=#{@options}")
-    puts("START TIME: #{Time.now}")
 
-    FileUtils.mkdir_p(@options[:root_dir])
+    if @options[:clean_start]
+      FileUtils.rm_rf(@options[:work_dir])
+      FileUtils.mkdir_p(@options[:work_dir])
+    end
+
     get_last_versions if @options[:last_release_puppetfile]
     get_interim_versions if @options[:show_interim_versions]
     check_out_projects if @options[:clean_start]
 
+    info('Gathering component information')
     results = {}
     get_project_list.each do |project_dir|
       project = File.basename(project_dir)
+      next if PROJECTS_TO_SKIP.include?(project)
+
       debug('='*80)
-      debug("Processing '#{project}'")
+      info("Processing '#{project}'")
       begin
         proj_info = nil
         git_origin = nil
@@ -824,6 +847,7 @@ EOM
         gitlab_ref = get_gitlab_ref(git_origin)
 
         unless gitlab_ref.nil?
+          info("--> Comparing '#{project}' latest GitHub and GitLab refs")
           if git_ref != gitlab_ref
             msg = [
               "Git reference mismatch for '#{project}':",
@@ -841,6 +865,7 @@ EOM
         }
 
         if @options[:release_status]
+          info("--> Checking '#{project}' #{proj_info.version} release status")
           entry[:github_released] = get_release_status(proj_info, git_origin)
           entry[:forge_released] = get_forge_status(proj_info)
 # RPM release check needs to be fixed
@@ -857,6 +882,7 @@ EOM
         end
 
         if @options[:test_status]
+          info("--> Checking '#{project}' #{proj_info.version} test status")
           gitlab_config_file = File.join(project_dir, '.gitlab-ci.yml')
           if File.exist?(gitlab_config_file)
             expected_jobs = get_configured_gitlab_jobs(gitlab_config_file)
@@ -911,23 +937,25 @@ EOM
 
     report_results(results)
 
-    puts("STOP TIME: #{Time.now}")
+    info("STOP TIME: #{Time.now}")
     return 0
   rescue SignalException =>e
     if e.inspect == 'Interrupt'
-      $stderr.puts "\nProcessing interrupted! Exiting."
+      error("\nProcessing interrupted! Exiting.")
     else
-      $stderr.puts "\nProcess received signal #{e.message}. Exiting!"
-      e.backtrace.first(10).each{|l| $stderr.puts l }
+      error("\nProcess received signal #{e.message}. Exiting!")
+      e.backtrace.first(10).each{|l| error(l) }
     end
     return 1
   rescue RuntimeError =>e
-    $stderr.puts("ERROR: #{e.message}")
+    error("ERROR: #{e.message}")
     return 1
   rescue => e
-    $stderr.puts("\n#{e.message}")
-    e.backtrace.first(10).each{|l| $stderr.puts l }
+    error("\n#{e.message}")
+    e.backtrace.first(10).each{|l| error(l) }
     return 1
+  ensure
+    @log_file.close unless @log_file.nil?
   end
 
   def translate_status(status)

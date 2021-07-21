@@ -105,11 +105,7 @@ class PuppetfileHelper
         mod = {
           :name        => mod.name,
           :path        => mod.path.to_s,
-#          :remote      => mod.repo.instance_variable_get('@remote'),
           :desired_ref => mod.desired_ref,
-#TODO Can we use these instead of querying git for the info?
-#          :git_source  => mod.repo.repo.origin,
-#          :git_ref     => mod.repo.head,
           :r10k_module => mod,
           :r10k_cache  => mod.repo.repo.cache_repo
         }
@@ -145,8 +141,8 @@ class SimpReleaseStatusGenerator
       :help_requested        => false
     }
 
-    @interim_mods = nil
-    @last_release_mods = nil
+    @interim_versions = nil
+    @last_release_versions = nil
     @github_api_limit_reached = false
   end
 
@@ -518,7 +514,7 @@ class SimpReleaseStatusGenerator
     end
   end
 
-  # FIXME Package cloud is no longer applicable.  Need to pull status from
+  # FIXME PackageCloud is no longer applicable.  Need to pull status from
   # new SIMP repos
   def get_rpm_status(proj_info)
     if proj_info.type == :module
@@ -612,13 +608,13 @@ class SimpReleaseStatusGenerator
     end
 
     debug("Retrieving latest simp-core pinned component versions from #{interim_puppetfile}")
-    @interim_mods = {}
+    @interim_versions = {}
     helper = PuppetfileHelper.new(interim_puppetfile, @options[:work_dir], false)
     helper.modules.each do |mod|
       if mod[:desired_ref].match(/master|main/)
-        @interim_mods[mod[:name]] = 'latest'
+        @interim_versions[mod[:name]] = 'latest'
       else
-        @interim_mods[mod[:name]] = mod[:desired_ref]
+        @interim_versions[mod[:name]] = mod[:desired_ref]
       end
     end
   end
@@ -644,10 +640,10 @@ class SimpReleaseStatusGenerator
     end
 
     debug("Retrieving component versions for SIMP #{last_release} from #{last_puppetfile}")
-    @last_release_mods = {}
+    @last_release_versions = {}
     helper = PuppetfileHelper.new(last_puppetfile, @options[:work_dir], false)
     helper.modules.each do |mod|
-      @last_release_mods[mod[:name]] = mod[:desired_ref]
+      @last_release_versions[mod[:name]] = mod[:desired_ref]
     end
   end
 
@@ -691,7 +687,7 @@ class SimpReleaseStatusGenerator
         "Usage: GITHUB_ACCESS_TOKEN=USER_GITHUB_API_TOKEN \\",
         "       GITLAB_ACCESS_TOKEN=USER_GITLAB_API_TOKEN \\",
         "       #{program} [OPTIONS]",
-        '         OR (release info incomplete)',
+        '         OR (release & test info incomplete)',
         "       #{program} [OPTIONS]"
       ].join("\n")
       opts.separator ''
@@ -715,7 +711,7 @@ class SimpReleaseStatusGenerator
       opts.on(
         '-p', '--puppetfile PUPPETFILE',
         'Puppetfile containing all components that may be in a SIMP release.',
-        'Defaults to latest simp-core Puppetfile.branches'
+        'Defaults to latest simp-core Puppetfile.branches.'
       ) do |puppetfile|
         @options[:puppetfile] = File.expand_path(puppetfile)
       end
@@ -739,8 +735,8 @@ class SimpReleaseStatusGenerator
       opts.on(
         '-s', '--[no-]clean-start',
         'Start with a fresh checkout of components (Puppet modules',
-        'and assets). Existing component directories will be removed.',
-        "Defaults to #{@options[:clean_start]}."
+        'and assets). Existing Puppetfiles and component directories',
+        " will be removed. Defaults to #{@options[:clean_start]}."
       ) do |clean_start|
         @options[:clean_start] = clean_start
       end
@@ -802,8 +798,8 @@ class SimpReleaseStatusGenerator
     columns = [
       'Component',
       'Proposed Version',
-      (@interim_mods.nil?) ? nil : 'Current Pinned Version',
-      (@last_release_mods.nil?) ? nil : 'Version in Last SIMP',
+      (@interim_versions.nil?) ? nil : 'Current Pinned Version',
+      (@last_release_versions.nil?) ? nil : 'Version in Last SIMP',
       @options[:release_status] ? 'GitHub Released' : nil,
       @options[:release_status] ? 'Forge Released' : nil,
       'GitLab Current',
@@ -819,8 +815,8 @@ class SimpReleaseStatusGenerator
       project_data = [
         project,
         proj_info[:latest_version],
-        (@interim_mods.nil?) ? nil : proj_info[:version_interim],
-        (@last_release_mods.nil?) ? nil : proj_info[:version_last_simp_release],
+        (@interim_versions.nil?) ? nil : proj_info[:version_interim],
+        (@last_release_versions.nil?) ? nil : proj_info[:version_last_simp_release],
         @options[:release_status] ? translate_status(proj_info[:github_released]) : nil,
         @options[:release_status] ? translate_status(proj_info[:forge_released]) : nil,
         proj_info[:gitlab_current],
@@ -960,18 +956,18 @@ EOM
         }
       end
 
-      if @last_release_mods
-        if @last_release_mods.key?(project)
-          last_version_in_simp = @last_release_mods[project]
+      if @last_release_versions
+        if @last_release_versions.key?(project)
+          last_version_in_simp = @last_release_versions[project]
         else
           last_version_in_simp = 'N/A'
         end
         entry[:version_last_simp_release] = last_version_in_simp
       end
 
-      if @interim_mods
-        if @interim_mods.key?(project)
-          entry[:version_interim] = @interim_mods[project]
+      if @interim_versions
+        if @interim_versions.key?(project)
+          entry[:version_interim] = @interim_versions[project]
         else
           entry[:version_interim] = 'N/A'
         end
@@ -1018,6 +1014,8 @@ EOM
     when :not_applicable
       'N/A'
     else
+       # This will handle release dates (a normal status type) as well as any
+       # unexpected status results
        status.to_s
     end
   end

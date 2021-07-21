@@ -133,16 +133,16 @@ class SimpReleaseStatusGenerator
   def initialize
 
     @options = {
-      :puppetfile              => nil,
-      :last_release_puppetfile => nil,
+      :puppetfile            => nil,
+      :show_last_versions    => true,
       :show_interim_versions => true,
-      :work_dir                => File.expand_path('workdir'),
-      :output_file             => 'simp_component_release_status.csv',
-      :clean_start             => true,
-      :release_status          => true,
-      :test_status             => true,
-      :verbose                 => false,
-      :help_requested          => false
+      :work_dir              => File.expand_path('workdir'),
+      :output_file           => 'simp_component_release_status.csv',
+      :clean_start           => true,
+      :release_status        => true,
+      :test_status           => true,
+      :verbose               => false,
+      :help_requested        => false
     }
 
     @interim_mods = nil
@@ -151,11 +151,24 @@ class SimpReleaseStatusGenerator
   end
 
   def check_out_projects
-    debug("Preparing a clean projects checkout at #{@options[:work_dir]}")
+    puppetfile = @options[:puppetfile]
+    if puppetfile.nil?
+      debug("Using latest simp-core Puppetfile.branches")
+      Dir.chdir("#{@options[:work_dir]}/simp-core") do |dir|
+        # Make sure we are not on a tag
+        `git checkout -q master`
+        src = File.join(dir, 'Puppetfile.branches')
+        puppetfile = File.join(@options[:work_dir], 'Puppetfile.branches')
+        debug("Copying latest simp-core Puppetfile.branches into #{puppetfile}")
+        FileUtils.cp(src, puppetfile)
+      end
+    end
+
+    debug("Preparing a clean projects checkout at #{@options[:work_dir]} using #{puppetfile}")
     FileUtils.rm_rf(File.join(@options[:work_dir], 'src'))
 
-    helper = PuppetfileHelper.new(@options[:puppetfile], @options[:work_dir])
-    Parallel.map( Array(helper.modules), :progress => 'Submodule Checkout') do |mod|
+    helper = PuppetfileHelper.new(puppetfile, @options[:work_dir])
+    Parallel.map( Array(helper.modules), :progress => 'Component Checkout') do |mod|
       Dir.chdir(@options[:work_dir]) do
         FileUtils.mkdir_p(mod[:path])
 
@@ -588,11 +601,19 @@ class SimpReleaseStatusGenerator
   # in simp-core
   # Any version not explicitly specified will be set to 'latest'
   def get_interim_versions
-    debug("Retrieving pinned component versions from latest simp-core/Puppetfile.pinned")
-    FileUtils.rm_rf("#{@options[:work_dir]}/simp-core")
-    `git clone -q #{GITHUB_URL_BASE}/simp-core #{@options[:work_dir]}/simp-core`
+    interim_puppetfile = nil
+    Dir.chdir("#{@options[:work_dir]}/simp-core") do |dir|
+      # Make sure we are not on a tag
+      `git checkout -q master`
+      src = File.join(dir, 'Puppetfile.pinned')
+      interim_puppetfile = File.join(@options[:work_dir], 'Puppetfile.pinned')
+      debug("Copying latest simp-core Puppetfile.pinned into #{interim_puppetfile}")
+      FileUtils.cp(src, interim_puppetfile)
+    end
+
+    debug("Retrieving latest simp-core pinned component versions from #{interim_puppetfile}")
     @interim_mods = {}
-    helper = PuppetfileHelper.new(File.join('simp-core', 'Puppetfile.pinned'), @options[:work_dir], false)
+    helper = PuppetfileHelper.new(interim_puppetfile, @options[:work_dir], false)
     helper.modules.each do |mod|
       if mod[:desired_ref].match(/master|main/)
         @interim_mods[mod[:name]] = 'latest'
@@ -603,10 +624,28 @@ class SimpReleaseStatusGenerator
   end
 
   # Get the last versions of components from a SIMP release Puppetfile
-  def get_last_versions
-    debug("Retrieving component versions from #{@options[:last_release_puppetfile]}")
+  def get_last_release_versions
+    # determine last SIMP release
+    last_release = nil
+    last_puppetfile = nil
+    debug('Determining last SIMP release')
+
+    Dir.chdir("#{@options[:work_dir]}/simp-core") do |dir|
+      `git fetch -t origin 2>/dev/null`
+      tags = `git tag -l`.split("\n")
+      debug("Available simp-core tags = #{tags}")
+      last_release = (tags.sort { |a,b| Gem::Version.new(a) <=> Gem::Version.new(b) })[-1]
+      `git checkout -q tags/#{last_release}`
+      src = File.join(dir, 'Puppetfile.pinned')
+      last_puppetfile = File.join(@options[:work_dir], "Puppetfile.#{last_release}")
+      debug("Copying simp-core #{last_release} Puppetfile.pinned into #{last_puppetfile}")
+      FileUtils.cp(src, last_puppetfile)
+      `git checkout -q master`
+    end
+
+    debug("Retrieving component versions for SIMP #{last_release} from #{last_puppetfile}")
     @last_release_mods = {}
-    helper = PuppetfileHelper.new(@options[:last_release_puppetfile], @options[:work_dir], false)
+    helper = PuppetfileHelper.new(last_puppetfile, @options[:work_dir], false)
     helper.modules.each do |mod|
       @last_release_mods[mod[:name]] = mod[:desired_ref]
     end
@@ -676,17 +715,17 @@ class SimpReleaseStatusGenerator
       opts.on(
         '-p', '--puppetfile PUPPETFILE',
         'Puppetfile containing all components that may be in a SIMP release.',
+        'Defaults to latest simp-core Puppetfile.branches'
       ) do |puppetfile|
         @options[:puppetfile] = File.expand_path(puppetfile)
       end
 
       opts.on(
-        '-l', '--last-release-puppetfile PUPPETFILE',
-        'Puppetfile of last SIMP release. When specified, the component',
-        'versions in this file will be listed along with the latest',
-        'component versions.'
-      ) do |puppetfile|
-        @options[:last_release_puppetfile] = File.expand_path(puppetfile)
+        '-l', '--[no-]show-last-versions',
+        'Show versions from the last SIMP release.',
+        "Defaults to #{@options[:show_last_versions]}."
+      ) do |show_last_versions|
+        @options[:show_last_versions] = show_last_versions
       end
 
       opts.on(
@@ -736,14 +775,24 @@ class SimpReleaseStatusGenerator
 
     begin
       opt_parser.parse!(args)
-
       @options[:log_file] = @options[:output_file] + '.log'
-
-      unless @options[:help_requested]
-        raise ('Puppetfile containing all components must be specified') if @options[:puppetfile].nil?
-      end
     rescue RuntimeError,OptionParser::ParseError => e
       raise "#{e.message}\n#{opt_parser.to_s}"
+    end
+  end
+
+  def prepare_work_env
+    debug("Creating clean work dir #{@options[:work_dir]}")
+    FileUtils.rm_rf(@options[:work_dir])
+    FileUtils.mkdir_p(@options[:work_dir])
+
+    if @options[:show_interim_versions] ||
+       @options[:show_last_versions] ||
+       @options[:puppetfile].nil?
+
+      # an option requires artifacts from simp-core, so go ahead and clone it
+      debug("Cloning simp-core to #{@options[:work_dir]} for Puppetfile retrieval(s)")
+      `git clone -q #{GITHUB_URL_BASE}/simp-core #{@options[:work_dir]}/simp-core`
     end
   end
 
@@ -818,12 +867,8 @@ EOM
     debug("Running with options = <#{args.join(' ')}>") unless args.empty?
     debug("Internal options=#{@options}")
 
-    if @options[:clean_start]
-      FileUtils.rm_rf(@options[:work_dir])
-      FileUtils.mkdir_p(@options[:work_dir])
-    end
-
-    get_last_versions if @options[:last_release_puppetfile]
+    prepare_work_env if @options[:clean_start]
+    get_last_release_versions if @options[:show_last_versions]
     get_interim_versions if @options[:show_interim_versions]
     check_out_projects if @options[:clean_start]
 

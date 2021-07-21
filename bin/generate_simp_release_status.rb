@@ -135,7 +135,7 @@ class SimpReleaseStatusGenerator
       :puppetfile              => nil,
       :last_release_puppetfile => nil,
       :show_interim_versions => true,
-      :root_dir                => File.expand_path('.'),
+      :root_dir                => File.expand_path('workdir'),
       :output_file             => 'simp_component_release_status.csv',
       :clean_start             => true,
       :release_status          => true,
@@ -151,7 +151,6 @@ class SimpReleaseStatusGenerator
 
   def check_out_projects
     debug("Preparing a clean projects checkout at #{@options[:root_dir]}")
-    #FIXME the root directory for checkouts should be pulled from the Puppetfile
     FileUtils.rm_rf(File.join(@options[:root_dir], 'src'))
 
     helper = PuppetfileHelper.new(@options[:puppetfile], @options[:root_dir])
@@ -588,8 +587,8 @@ class SimpReleaseStatusGenerator
   # in simp-core
   # Any version not explicitly specified will be set to 'latest'
   def get_interim_versions
-    FileUtils.rm_rf('simp-core')
-    `git clone -q #{GITHUB_URL_BASE}/simp-core`
+    FileUtils.rm_rf("#{@options[:root_dir]}/simp-core")
+    `git clone -q #{GITHUB_URL_BASE}/simp-core #{@options[:root_dir]}/simp-core`
     @interim_mods = {}
     helper = PuppetfileHelper.new(File.join('simp-core', 'Puppetfile.pinned'), @options[:root_dir], false)
     helper.modules.each do |mod|
@@ -649,7 +648,7 @@ class SimpReleaseStatusGenerator
       opts.on(
         '-d', '--root-dir ROOT_DIR',
         'Root directory in which projects will be checked out.',
-        'Defaults to current directory.'
+        "Defaults to '<current dir>/workdir'."
       ) do |root_dir|
         @options[:root_dir] = File.expand_path(root_dir)
       end
@@ -803,6 +802,7 @@ EOM
     debug("Internal options=#{@options}")
     puts("START TIME: #{Time.now}")
 
+    FileUtils.mkdir_p(@options[:root_dir])
     get_last_versions if @options[:last_release_puppetfile]
     get_interim_versions if @options[:show_interim_versions]
     check_out_projects if @options[:clean_start]

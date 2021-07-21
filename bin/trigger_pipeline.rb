@@ -8,18 +8,17 @@ $options = {
   :endpoint           => (ENV['GITLAB_URL'] || 'https://gitlab.com/api/v4'),
   :org                => 'simp',
   :branch             => 'master',
+  #TODO make this configurable
   :pipeline_variables => {
     'SIMP_FORCE_RUN_MATRIX' => 'yes',
     'SIMP_MATRIX_LEVEL'     => 2
-   },
-  :verbose            => false
+   }
 }
 
-OptionParser.new do |opts|
+opt_parse = OptionParser.new do |opts|
   program = File.basename(__FILE__)
   opts.banner = [
-    "Usage: #{program} [OPTIONS] -t USER_GITLAB_API_TOKEN",
-    "       GITLAB_TOKEN=USER_GITLAB_API_TOKEN #{program} [OPTIONS]"
+    "Usage: GITLAB_ACCESS_TOKEN=USER_GITLAB_API_TOKEN #{program} [OPTIONS] project1 [project2 ...]"
   ].join("\n")
 
   opts.separator("\n")
@@ -30,12 +29,10 @@ OptionParser.new do |opts|
     $options[:org] = o
   end
 
-  opts.on('-p', '--project=val', String,
-    'Name of project') do |project|
-    $options[:project] = project
-  end
-
-  opts.on('-t', '--token=val', String, 'GitLab API token') do |t|
+  opts.on('-t', '--token=val', String,
+    'GitLab API token. This option is NOT recommended.',
+    'Use GITLAB_ACCESS_TOKEN environment variable instead.'
+  ) do |t|
     $options[:token] = t
   end
 
@@ -45,21 +42,23 @@ OptionParser.new do |opts|
     $options[:endpoint] = e
   end
 
-  opts.on('-v', '--[no-]verbose', 'Run verbosely') do |v|
-    $options[:verbose] = v
-  end
-
   opts.on('-h', '--help', 'Print this menu') do
     puts opts
     exit
   end
-end.parse!
+end
+opt_parse.parse!
+
+$options[:projects] = ARGV
+if $options[:projects].empty?
+  fail("No projects specified.\n#{opt_parse.banner}")
+end
 
 unless $options[:token]
-  if ENV['GITLAB_TOKEN']
-    $options[:token] = ENV['GITLAB_TOKEN']
+  if ENV['GITLAB_ACCESS_TOKEN']
+    $options[:token] = ENV['GITLAB_ACCESS_TOKEN']
   else
-    fail('GITLAB_TOKEN must be set')
+    fail('GITLAB_ACCESS_TOKEN must be set')
   end
 end
 
@@ -69,11 +68,17 @@ gitlab_client = Gitlab.client(
   :private_token => $options[:token]
 )
 
-begin
-  proj = gitlab_client.project("#{$options[:org]}/#{$options[:project]}")
-  puts "Creating pipeline for #{proj.name}"
-  gitlab_client.create_pipeline(proj.id, $options[:branch], $options[:pipeline_variables])
-rescue Exception => e
-  # can happen if a GitLab project for the component does not exist
-  fail("Unable to create pipeline for '#{$options[:project]}':\n  #{e.message}")
+exit_status = 0
+$options[:projects].each do |project|
+  begin
+    proj = gitlab_client.project("#{$options[:org]}/#{project}")
+    puts "Creating pipeline for #{proj.name}"
+    gitlab_client.create_pipeline(proj.id, $options[:branch], $options[:pipeline_variables])
+  rescue Exception => e
+    # can happen if a GitLab project for the component does not exist
+    fail("Unable to create pipeline for '#{:project}':\n  #{e.message}")
+    exit_status = -1
+  end
 end
+
+exit exit_status

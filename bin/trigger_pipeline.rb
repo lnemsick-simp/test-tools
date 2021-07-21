@@ -2,8 +2,6 @@
 require 'gitlab'
 require 'optparse'
 
-#time_start = Time.now
-
 $options = {
   :endpoint           => (ENV['GITLAB_URL'] || 'https://gitlab.com/api/v4'),
   :org                => 'simp',
@@ -36,7 +34,7 @@ opt_parse = OptionParser.new do |opts|
     $options[:token] = t
   end
 
-  opts.on('-e', '--endpoint=val', String, 
+  opts.on('-e', '--endpoint=val', String,
     'GitLab API endpoint',
     "Defaults to #{$options[:endpoint]}") do |e|
     $options[:endpoint] = e
@@ -47,6 +45,7 @@ opt_parse = OptionParser.new do |opts|
     exit
   end
 end
+
 opt_parse.parse!
 
 $options[:projects] = ARGV
